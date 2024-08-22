@@ -123,7 +123,9 @@ pub const Chip8Stack = struct{
 };
 
 // The original Chip8 display was 64 wide and 32 bits tall and monochrome, i.e.
-// each pixel is either black or white.
+// each pixel is either black or white. This is abstractly represented by a
+// contiguous buffer of size 64x32 porting 8-bit unsigned int. This is the infor-
+// mation that Raylib will use to display the Chip-8's applications.
 //
 //         (0,0)  ______________________________________ (63,0)
 //               |                                     |
@@ -133,11 +135,11 @@ pub const Chip8Stack = struct{
 //               |                                     |
 //       (0, 31) |_____________________________________| (63, 31)
 //
-// The drawing process is done through the usage of sprites,, which are arrays of u8 retrieved from
-// memory.
+// The drawing process is done through the usage of sprites, see the `draw` method for more infor-
+// mation.
 pub const Chip8Graphics = struct {
-    pub const DROWS: usize = 64;
-    pub const DCOLS: usize = 32;
+    pub const DROWS: usize = 32;
+    pub const DCOLS: usize = 64;
     // DSIZE := DROWS * DCOLS
     pub const DSIZE: usize = 2048;
     // The interpreter update the display in a 60 Hz rate, i.e. 60 FPS in modern terms.
@@ -148,20 +150,20 @@ pub const Chip8Graphics = struct {
 
     // The buffer is the abstract representation of Chip8's screen as a contiguous block of memory.
     // The values can be 0x1 for white or 0x1 for black.
-    buffer: [DSIZE]u8,
+    buffer: [DSIZE]u1,
 
     pub fn init() Chip8Graphics{
         return Chip8Graphics{
-            .buffer = [_]u8{0} ** DSIZE,
+            .buffer = [_]u1{0} ** DSIZE,
         };
     }
 
     // Clean the screen.
     pub fn cls(self: *Chip8Graphics) void{
-        @memset(self.buffer[0..DSIZE], 0x0);
+        @memset(self.buffer[0..DSIZE], 0);
     }
 
-    pub fn getPtrPixel(self: *Chip8Graphics, index_x: usize, index_y: usize) *u8{
+    pub fn getPtrPixel(self: *Chip8Graphics, index_x: usize, index_y: usize) *u1{
         const pos_x = index_x & 63;
         const pos_y = index_y & 31;
         return &self.buffer[pos_y*DCOLS + pos_x];
@@ -176,30 +178,30 @@ pub const Chip8Graphics = struct {
     // The draw function checks the activation of each bit in the elements of
     // the sprite.
     //
-    //                             8 bit width
-    //                 ___________________________________
-    //                |                                  |
-    //           |     0x X11 X12 X13 X14 X15 X16 X17 X18
-    //           |     0x X21 X22 X23 X24 X25 X26 X27 X28
-    //           |     0x X31 X32 X33 X34 X35 X36 X37 X38
-    //           |     0x X41 X42 X43 X44 X45 X46 X47 X48
-    //  nibble---|     0x X51 X52 X53 X54 515 X56 X57 X58
-    //  height   |     0x X61 X62 X63 X64 X65 X66 X67 X68
-    //           |     0x X71 X72 X73 X74 X75 X76 X77 X78
-    //           |     0x X81 X82 X83 X84 X85 X86 X87 X88
-    //           |     0x X91 X92 X93 X94 X95 X96 X97 X98
+    //                  bit 7 6 5 4 3 2 1 0
+    //         -------+--------------------
+    //         byte 1 |     0 1 1 1 1 1 0 0
+    //         byte 2 |     0 1 0 0 0 0 0 0
+    //         byte 3 |     0 1 0 0 0 0 0 0
+    //         byte 4 |     0 1 1 1 1 1 0 0
+    //         byte 5 |     0 1 0 0 0 0 0 0
+    //         byte 6 |     0 1 0 0 0 0 0 0
+    //         byte 7 |     0 1 1 1 1 1 0 0
     //
-    // If active, the function checks the array representation 
+    // If active, the function checks the array representation. Above
+    // we see the sprite representation of the letter E. If the bit is activated
     pub fn draw(self: *Chip8Graphics, pos_x: u8, pos_y: u8, sprite: []u8, v0xF: *u8) void{
-        for (0.., sprite) |row,byte|{
+        v0xF.* = 0;
+        for (0.., sprite) |row, byte|{
             for (0..8) |col|{
-                const mask: u8 = @intCast(@as(u16, @intCast(byte)) >> @as(u4, @intCast(col)));
-                const bit: u1 = @intCast(mask & 0x1);
-                const pixelp = self.getPtrPixel(pos_x + col, pos_y + row);
-                if (bit == 1 and pixelp.* == 1){
-                    v0xF.* = 1;
+                const bit: u1 = @truncate((byte >> @truncate(col)) & 0x1);
+                if (bit == 1){
+                    const pixelp = self.getPtrPixel(pos_x + col, pos_y + row);
+                    pixelp.* ^= bit;
+                    if (pixelp.* == 0){
+                        v0xF.* = 1;
+                    }
                 }
-                pixelp.* ^= byte;
             }
         }
     }
@@ -266,7 +268,8 @@ pub const Chip8Memory = struct{
 
 pub const Chip8CPU = struct {
     const Self = @This();
-    pub const REGISTER_SIZE: usize = 16;
+    pub const REGISTER_SIZE = 16;
+    pub const MEMORY_SIZE = 
     // Chip8 has 16 8-bit registers, ranging from 0x0 to 0xF. The register
     // 0xF is not for use of the programs, instead it holds information from
     // instructions performed.
@@ -286,6 +289,7 @@ pub const Chip8CPU = struct {
     stack: Chip8Stack,
     keys: [KEY_SIZE]u1,
     graphics: Chip8Graphics,
+    allocator: Allocator,
 
     pub fn init() Self{
         var self: Self = undefined;
@@ -302,13 +306,16 @@ pub const Chip8CPU = struct {
     }
 
     pub fn loadRom(self: *Self, filepath: [:0]const u8) !void{
-        var input_file = try std.fs.openFileAbsoluteZ(filepath, .{});
-        defer input_file.close();
-        const size = try input_file.getEndPos();
-        const reader = input_file.reader();
+        var file = std.fs.cwd().openFile(filepath, .{})
+            catch |err| return err;
+        defer file.close();
+        const size = file.getEndPos()
+            catch |err| return err;
+        var reader = file.reader();
         for (0..size) |i|{
-            const byte = try reader.readByte();
-            self.memory.loadAddr(Chip8Memory.MEM_ISTART + i, byte);
+            const byte = reader.readByte()
+                catch |err| return err;
+            self.memory.loadAddr(Chip8Memory.MEM_ISTART + i, byte); 
         }
     }
 
@@ -730,7 +737,7 @@ pub const Chip8CPU = struct {
         const pos_x: u8 = self.registers[ix];
         const pos_y: u8 = self.registers[iy];
         const v0xF: *u8 = &self.registers[0xF];
-        const sprite: []u8 = self.memory.getChunk(self.pc, self.pc + nibble);
+        const sprite = self.memory.getChunk(self.pc, self.pc + nibble);
         self.graphics.draw(pos_x, pos_y, sprite, v0xF);
         if (dbg) |d|{
             utils.nibbleHex(ix, d.I_0xDXYN[6..9]);

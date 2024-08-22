@@ -9,6 +9,6 @@ pub fn main() !void{
     _ = args_it.skip();
     const filepath: [:0]const u8 = args_it.next()
         orelse @panic("No ROM passed.");
-    var a = try app.Emulator.init(filepath, false);
+    var a = try app.Emulator.init(filepath, true);
     try a.mainLoop();
 }

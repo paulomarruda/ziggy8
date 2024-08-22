@@ -26,8 +26,8 @@ pub const Emulator = struct {
             try self.cpu.emulateCycle(dbgp);
             rl.beginDrawing();
             rl.clearBackground(rl.Color.black);
-            for (0..cpu.Chip8Graphics.DROWS) |x|{
-                for (0..cpu.Chip8Graphics.DCOLS) |y|{
+            for (0..cpu.Chip8Graphics.DCOLS) |x|{
+                for (0..cpu.Chip8Graphics.DROWS) |y|{
                     if (self.cpu.graphics.pixelIsOn(x, y)){
                         const pos_x: i32 = @intCast(x * cpu.Chip8Graphics.RESIZE_RATE);
                         const pos_y: i32 = @intCast(y * cpu.Chip8Graphics.RESIZE_RATE);
@@ -38,7 +38,7 @@ pub const Emulator = struct {
                             pos_y,
                             width,
                             height,
-                            rl.Color.black
+                            rl.Color.green
                         );
                     }
                 }

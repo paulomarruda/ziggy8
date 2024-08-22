@@ -1,4 +1,5 @@
-const testing = @import("std").testing;
+const std = @import("std");
+const testing = std.testing;
 const cpu = @import("cpu.zig");
 const utils = @import("utils.zig");
 
@@ -155,6 +156,6 @@ pub const Debugger = struct {
         }
 
         pub fn print(self: Debugger) void{
-            _ = self;
+            std.log.debug("{s}", .{self.last_instruction});
         }
     };
