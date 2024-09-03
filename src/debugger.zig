@@ -111,7 +111,7 @@ pub const Debugger = struct {
 
         pub fn init() Debugger{
             var self: Debugger = undefined;
-            utils.u16Hex(cpu.Chip8Memory.MEM_ISTART, &self.pc_repr);
+            utils.u16Hex(cpu.Chip8CPU.MEM_ISTART, &self.pc_repr);
             self.I_0x00E0= "CLS".*;
             self.I_0x00EE= "RET".*;
             self.I_0x1NNN= "JP 0x0NNN".*;

@@ -46,7 +46,7 @@ pub const MemoryError = error{
 pub const Opcode = packed struct(u16){
     // The opcode consists of a 16-bit uint
     //         0x X Y W Z
-    //            | | | |_ least significan quarter, aka nibble
+    //            | | | |_ least significan quarter
     //            | | |___ info quarter 1
     //            | |_____ info quarter 2
     //            |_______ most significant quarter
@@ -55,7 +55,10 @@ pub const Opcode = packed struct(u16){
     iq2: u4,
     msq: u4,
 
-    pub fn fetchAddr(self: Opcode) u16{
+    pub fn init(code: u16) Opcode{
+        return @bitCast(code);
+    }
+
     // The address consists of a 12-bit unsigned integer retrieved from the
     // opcode as follows
     //
@@ -63,10 +66,10 @@ pub const Opcode = packed struct(u16){
     //             |_____|
     //                |___ address
     //
+    pub fn fetchAddr(self: Opcode) u16{
         return @as(u16, self.iq2) << 8 | @as(u16, self.iq1) << 4 | @as(u16, self.lsq); 
     }
 
-    pub fn fetchByte(self: Opcode) u8{
     // The byte consists of a 8.bit unsigned integer retrieved from the
     // opcode as follows
     //
@@ -74,202 +77,27 @@ pub const Opcode = packed struct(u16){
     //               |___|
     //                 |__ byte
     //
+    pub fn fetchByte(self: Opcode) u8{
         return @as(u8, self.iq1) << 4 | @as(u8, self.lsq);
     }
 };
 
-
-    // Chip8 has a 16-level stack (LIFO) to keep track of the order of the
-    // instructions.
-pub const Chip8Stack = struct{
-    pub const STACK_SIZE: usize = 16;
-    sp: u4,
-    buffer: [STACK_SIZE]?u16,
-
-    pub fn init() Chip8Stack{
-        return Chip8Stack{
-            .sp = 0x0,
-            .buffer = [_]?u16{null} ** STACK_SIZE,
-        };
-    }
-
-    // Enstack the adresss hold by the PC.
-    pub fn call(self: *Chip8Stack, pc: u16) StackError!void{
-        if (self.sp == 16){
-            return StackError.STACK_OVERFLOW;
-        }
-        self.buffer[self.sp] = pc;
-        self.sp += 1;
-    }
-
-    // Returns the top of the stack.
-    pub fn ret(self: *Chip8Stack) StackError!u16{
-        if (self.sp == 0){
-            return Chip8Memory.MEM_ISTART;
-        }
-        self.sp -= 1;
-        defer self.buffer[self.sp] = null;
-        if (self.buffer[self.sp]) |item|{
-            return item;
-        }else return StackError.INVALID_ADDRESS;
-    }
-
-    // Visual representation of the stack for debugging purposes.
-    pub fn represent(self: Chip8Stack, debg: *db.Debugger) void{
-        for (0.., self.buffer) |i, addr|{
-            debg.loadStack(i, addr);
-        } 
-    }
-};
-
-// The original Chip8 display was 64 wide and 32 bits tall and monochrome, i.e.
-// each pixel is either black or white. This is abstractly represented by a
-// contiguous buffer of size 64x32 porting 8-bit unsigned int. This is the infor-
-// mation that Raylib will use to display the Chip-8's applications.
-//
-//         (0,0)  ______________________________________ (63,0)
-//               |                                     |
-//               |                                     |
-//               |                                     |
-//               |                                     |
-//               |                                     |
-//       (0, 31) |_____________________________________| (63, 31)
-//
-// The drawing process is done through the usage of sprites, see the `draw` method for more infor-
-// mation.
-pub const Chip8Graphics = struct {
-    pub const DROWS: usize = 32;
-    pub const DCOLS: usize = 64;
-    // DSIZE := DROWS * DCOLS
-    pub const DSIZE: usize = 2048;
-    // The interpreter update the display in a 60 Hz rate, i.e. 60 FPS in modern terms.
-    pub const UPDATE_RATE: usize = 60;
-    // For the graphical representation purposes, the window displaying the
-    // applications will be resized to 640x320.
-    pub const RESIZE_RATE: usize = 10;
-
-    // The buffer is the abstract representation of Chip8's screen as a contiguous block of memory.
-    // The values can be 0x1 for white or 0x1 for black.
-    buffer: [DSIZE]u1,
-
-    pub fn init() Chip8Graphics{
-        return Chip8Graphics{
-            .buffer = [_]u1{0} ** DSIZE,
-        };
-    }
-
-    // Clean the screen.
-    pub fn cls(self: *Chip8Graphics) void{
-        @memset(self.buffer[0..DSIZE], 0);
-    }
-
-    pub fn getPtrPixel(self: *Chip8Graphics, index_x: usize, index_y: usize) *u1{
-        const pos_x = index_x & 63;
-        const pos_y = index_y & 31;
-        return &self.buffer[pos_y*DCOLS + pos_x];
-    }
-
-    pub fn pixelIsOn(self: *Chip8Graphics, index_x: usize, index_y: usize) bool{
-        const pixelp = self.getPtrPixel(index_x, index_y);
-        return if (pixelp.* == 1) true else false;
-    }
-
-    // A sprite is an array of u8 indexed by a nibble, i.e. an u4.
-    // The draw function checks the activation of each bit in the elements of
-    // the sprite.
-    //
-    //                  bit 7 6 5 4 3 2 1 0
-    //         -------+--------------------
-    //         byte 1 |     0 1 1 1 1 1 0 0
-    //         byte 2 |     0 1 0 0 0 0 0 0
-    //         byte 3 |     0 1 0 0 0 0 0 0
-    //         byte 4 |     0 1 1 1 1 1 0 0
-    //         byte 5 |     0 1 0 0 0 0 0 0
-    //         byte 6 |     0 1 0 0 0 0 0 0
-    //         byte 7 |     0 1 1 1 1 1 0 0
-    //
-    // If active, the function checks the array representation. Above
-    // we see the sprite representation of the letter E. If the bit is activated
-    pub fn draw(self: *Chip8Graphics, pos_x: u8, pos_y: u8, sprite: []u8, v0xF: *u8) void{
-        v0xF.* = 0;
-        for (0.., sprite) |row, byte|{
-            for (0..8) |col|{
-                const bit: u1 = @truncate((byte >> @truncate(col)) & 0x1);
-                if (bit == 1){
-                    const pixelp = self.getPtrPixel(pos_x + col, pos_y + row);
-                    pixelp.* ^= bit;
-                    if (pixelp.* == 0){
-                        v0xF.* = 1;
-                    }
-                }
-            }
-        }
-    }
-};
-
-pub const Chip8Memory = struct{
-    // The interpreter has 4096 bytes of memory, ranging from 0x0000 to 0x0FFF.
-    // The original Chip8 interpreter reserved the section 0x0000 - 0x1FF for the
-    // interpreter itself. The only subsection that we use will be 0x050 - 0x0A0
-    // that we reserve to storage the character set. The section 0x0200 - 0x0FFF
-    // is dedicated to store the instructions of the program being executed.
-    pub const MEM_SIZE: usize = 4096;
-    pub const FONT_MEM_START: usize = 0x050;
-    pub const FONT_MEM_END: usize = 0x0A0;
-    pub const MEM_ISTART: usize = 0x0200;
-    pub const MEM_END: usize = 0x0FFF;
-
-    // The 16-bit index register is a special register used to store memory addresses.
-    // In practice, it will store only 12-bit unsigned integers.
-    buffer: [MEM_SIZE]u8,
-    avaiable_mem: usize,
-
-    pub fn init() Chip8Memory{
-        var ram = Chip8Memory{
-            .buffer = [_]u8{0} ** MEM_SIZE,
-            .avaiable_mem = MEM_SIZE,
-        };
-        @memcpy(ram.buffer[FONT_MEM_START..FONT_MEM_END], FONT_SET[0..]);
-        ram.avaiable_mem -= 0x01FF;
-        return ram;
-    }
-
-    pub fn loadAddr(self: *Chip8Memory, addr: usize, item: u8) void{
-        self.buffer[addr] = item;
-    }
-
-    pub fn getAdrr(self: Chip8Memory, addr: usize) u8{
-        return self.buffer[addr];
-    }
-
-    pub fn getChunk(self: *Chip8Memory, starting_adrr: usize, end_addr: usize) []u8{
-        return self.buffer[starting_adrr..end_addr];
-    }
-
-    pub fn loadChunk(self: *Chip8Memory, chunk: []u8, starting_address: usize) MemoryError!void{
-        if (self.avaiable_mem >= chunk.len){
-            return MemoryError.OUT_OF_MEMORY;
-        }else if (starting_address < MEM_ISTART or starting_address > MEM_END){
-            return MemoryError.MEMORY_INDEX_OUT_OF_BOUNDS; 
-        }
-        @memcpy(self.buffer[starting_address..starting_address+chunk.len], chunk.ptr);
-        self.avaiable_mem -= chunk.len;
-    }
-
-    // Retrieve the opcode pointed by the PC.
-    pub fn getOpcode(self: Chip8Memory, pc: u16) Opcode{
-        var code: u16 = self.buffer[pc];
-        code <<= 8;
-        code |= @as(u16, @intCast(self.buffer[pc + 1]));
-        const opcode: Opcode = @bitCast(code);
-        return opcode;
-    }
+pub const Chip8Instruction = union(enum){
 };
 
 pub const Chip8CPU = struct {
     const Self = @This();
     pub const REGISTER_SIZE = 16;
-    pub const MEMORY_SIZE = 
+    pub const STACK_SIZE = 16;
+    pub const DROWS: usize = 32;
+    pub const DCOLS: usize = 64;
+    // DSIZE := DROWS * DCOLS
+    pub const DSIZE: usize = DROWS * DCOLS;
+    pub const MEM_SIZE: usize = 4096;
+    pub const FONT_MEM_START: usize = 0x050;
+    pub const FONT_MEM_END: usize = 0x0A0;
+    pub const MEM_ISTART: usize = 0x0200;
+    pub const MEM_END: usize = 0x0FFF;
     // Chip8 has 16 8-bit registers, ranging from 0x0 to 0xF. The register
     // 0xF is not for use of the programs, instead it holds information from
     // instructions performed.
@@ -283,25 +111,33 @@ pub const Chip8CPU = struct {
     dt: u8,
     // The -bit sound timer register.
     st: u8,
-    memory: Chip8Memory,
-    // In this implementation we choose to use a stack data structure instead
-    // of an array and a stack pointer.
-    stack: Chip8Stack,
+    // 16-level stack.
+    stack: [STACK_SIZE]u16,
+    // The Stack pointer.
+    sp: u8,
+    memory: [MEM_SIZE]u8,
+    // Chip8 has 16 keys that can either be activated (or down) or deactivated (or up).
     keys: [KEY_SIZE]u1,
-    graphics: Chip8Graphics,
+    // The original Chip8 had a 32x64 black-and-white display. Here we represent it as a contiguous
+    // block of memory that can be either activated (=1, representing white) or deactivated (=0, 
+    // representing black). The abstract position (X,Y) correspond to the index Y*DCOLS + X in our
+    // representation.
+    graphics: [DSIZE]u1,
     allocator: Allocator,
 
     pub fn init() Self{
         var self: Self = undefined;
         self.registers = [_]u8{0} ** REGISTER_SIZE;
-        self.pc = Chip8Memory.MEM_ISTART;
+        self.pc = MEM_ISTART;
         self.ir = 0x0000;
         self.dt = 0x00;
         self.st = 0x00;
-        self.memory = Chip8Memory.init();
-        self.stack = Chip8Stack.init();
+        self.sp = 0;
+        self.memory = [_]u8{0} ** MEM_SIZE;
+        @memcpy(self.memory[FONT_MEM_START..FONT_MEM_END], &FONT_SET);
+        self.stack = [_]u16{0} ** STACK_SIZE;
         self.keys = [_]u1{0} ** KEY_SIZE;
-        self.graphics = Chip8Graphics.init();
+        self.graphics = [_]u1{0} ** DSIZE;
         return self;
     }
 
@@ -315,34 +151,58 @@ pub const Chip8CPU = struct {
         for (0..size) |i|{
             const byte = reader.readByte()
                 catch |err| return err;
-            self.memory.loadAddr(Chip8Memory.MEM_ISTART + i, byte); 
+            self.memory[MEM_ISTART + i] =  byte; 
         }
     }
 
-    pub fn loadKey(self: *Self, key: usize) !void{
-        self.keys[key] = 1;
+    pub fn loadKey(self: *Self, key: usize, down: bool) void{
+        self.keys[key] = if (down) 1 else 0;
+    }
+
+    pub fn getPixelPtr(self: *Self, x_co: usize, y_co: usize) *u1{
+        const index: usize = (y_co & 31) * DCOLS + (x_co & 63);
+        return &self.graphics[index];
+    }
+
+    pub fn isPixelActive(self: *Self, x_co: usize, y_co: usize) bool{
+        return if (self.getPixelPtr(x_co, y_co).* == 1) true else false;
+    }
+
+    pub fn getOpcode(self: Self) Opcode{
+        var code: u16 = self.memory[self.pc];
+        code <<= 8;
+        code |= @as(u16, self.memory[self.pc + 1]);
+        const opcode: Opcode = @bitCast(code);
+        return opcode;
     }
 
     // THE EMULATION CYCLE
     // -------------------
 
     pub fn emulateCycle(self: *Self, dbg: ?*db.Debugger) !void{
-        const opcode: Opcode = self.memory.getOpcode(self.pc);
+        const opcode: Opcode = self.getOpcode();
         self.incrementPC();
         try self.emulate(opcode, dbg);
-        if (self.dt > 0){
-            self.dt -= 1;
-        }
-        if (self.st > 0){
-            self.st -= 1;
-        }
         if (dbg) |d|{
             d.print();
         }
     }
 
-    fn emulate(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) !void{
-        switch (opcode.msq) {
+    pub fn tickTimers(self: *Self) void{
+        if (self.dt > 0){
+            self.dt -= 1;
+        }
+        if (self.st > 0){
+            if (self.st == 1){
+                // TO-DO
+                // BEEP
+            }
+            self.st -= 1;
+        }
+    }
+
+    pub fn emulate(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) !void{
+        try switch (opcode.msq) {
             0x0 => {
                 switch (opcode.lsq) {
                     0x0 => self.cls(dbg),
@@ -402,7 +262,7 @@ pub const Chip8CPU = struct {
                     else => return CPUError.InvalidOpcode
                 }
             },
-        }
+        };
     }
 
     // REGISTERS INCREMENTS
@@ -419,7 +279,7 @@ pub const Chip8CPU = struct {
     // clear the screen.
     // The interpreter sets the graphic's representation's entries to 0.
     fn cls(self: *Self, dbg: ?*db.Debugger) void{
-        self.graphics.cls();
+        @memset(self.graphics[0..], 0);
         if (dbg) |d|{
             d.last_instruction = &d.I_0x00E0;
         }
@@ -427,8 +287,12 @@ pub const Chip8CPU = struct {
 
     // OPCODE: 0x00EE
     // The interpreter sets the PC to the address at the top of the stack.
-    fn ret(self: *Self, dbg: ?*db.Debugger) !void{
-        self.pc = try self.stack.ret();
+    fn ret(self: *Self, dbg: ?*db.Debugger) StackError!void{
+        if (self.sp == 0){
+            return StackError.EMPTY_STACK;
+        }
+        self.sp -= 1;
+        self.pc = self.stack[self.sp];
         if (dbg) |d|{
             d.last_instruction = &d.I_0x00EE;
         }
@@ -449,7 +313,11 @@ pub const Chip8CPU = struct {
     // call the subroutine at NNN.
     // The interpreter sets the top of the stack to PC and the PC to NNN.
     fn callAdrr(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) StackError!void{
-        try self.stack.call(self.pc);
+        if (self.sp == 16){
+            return StackError.STACK_OVERFLOW;
+        }
+        self.stack[self.sp] = self.pc;
+        self.sp += 1;
         self.pc = opcode.fetchAddr();
         if (dbg) |d|{
             utils.u16Hex(self.pc, d.I_0x2NNN[5..]);
@@ -462,8 +330,8 @@ pub const Chip8CPU = struct {
     // The interpreter compares Vx with the byte KK; if they are equal, it
     // increments the PC.
     fn seVxByte(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const kk: u8 = opcode.fetchByte();
+        const x = opcode.iq2;
+        const kk = opcode.fetchByte();
         if (self.registers[x] == kk){
             self.incrementPC();
         }
@@ -479,8 +347,8 @@ pub const Chip8CPU = struct {
     // The interpreter compares Vx with the byte KK; if they are not equal, it
     // increments the PC.
     fn sneVxByte(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const kk: u8 = opcode.fetchByte();
+        const x = opcode.iq2;
+        const kk = opcode.fetchByte();
         if (self.registers[x] != kk){
             self.incrementPC();
         }
@@ -496,8 +364,8 @@ pub const Chip8CPU = struct {
     // The interpreter compares VX with VY; if they are equal, it increments
     // the PC.
     fn seVxVy(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const y: u4 = opcode.iq1;
+        const x = opcode.iq2;
+        const y = opcode.iq1;
         if (self.registers[x] == self.registers[y]){
             self.incrementPC();
         }
@@ -512,7 +380,7 @@ pub const Chip8CPU = struct {
     // Set VX := KK.
     // The interpreter set the register VX to the byte KK.
     fn ldVxByte(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         self.registers[x] = opcode.fetchByte();
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0x6XKK[5..8]);
@@ -526,8 +394,8 @@ pub const Chip8CPU = struct {
     // The interpreter adds VX to the byte KK and stores it in VX. No carry
     // is considered.
     fn addVxByte(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const kk: u8 = opcode.fetchByte();
+        const x = opcode.iq2;
+        const kk = opcode.fetchByte();
         self.registers[x], _ = @addWithOverflow(self.registers[x], kk);
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0x7XKK[6..9]);
@@ -540,8 +408,8 @@ pub const Chip8CPU = struct {
     // Set VX := VY.
     // The interpreter sets the register VX to VY.
     fn ldVxVy(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const y: u4 = opcode.iq1;
+        const x = opcode.iq2;
+        const y = opcode.iq1;
         self.registers[x] = self.registers[y];
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0x8XY0[5..8]);
@@ -554,8 +422,8 @@ pub const Chip8CPU = struct {
     // VX := VX OR VY (bitwise).
     // The interpreter sets VX to the bitwise OR between VX and VY.
     fn orVxVy(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const y: u4 = opcode.iq1;
+        const x = opcode.iq2;
+        const y = opcode.iq1;
         self.registers[x] |= self.registers[y];
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0x8XY1[5..8]);
@@ -568,11 +436,10 @@ pub const Chip8CPU = struct {
     // VX := VX AND VY (bitwise).
     // The interpreter sets VX to the bitwise AND between VX and VY.
     fn andVxVy(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const y: u4 = opcode.iq1;
+        const x = opcode.iq2;
+        const y = opcode.iq1;
         self.registers[x] &= self.registers[y];
-        if (dbg) |d|{
-            utils.nibbleHex(x, d.I_0x8XY2[6..9]);
+        if (dbg) |d|{ utils.nibbleHex(x, d.I_0x8XY2[6..9]);
             utils.nibbleHex(y, d.I_0x8XY2[14..17]);
             d.last_instruction = &d.I_0x8XY2;
         }
@@ -582,8 +449,8 @@ pub const Chip8CPU = struct {
     // VX := VX XOR VY (bitwise).
     // The interpreter sets VX to the bitwise XOR between VX and VY.
     fn xorVxVy(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const y: u4 = opcode.iq1;
+        const x = opcode.iq2;
+        const y = opcode.iq1;
         self.registers[x] ^= self.registers[y];
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0x8XY3[6..9]);
@@ -597,8 +464,8 @@ pub const Chip8CPU = struct {
     // The interpreter adds VX to VY and stores into VX; if overflow ocurred, VF
     // is set to 1, otherwise 0.
     fn addVxVy(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const y: u4 = opcode.iq1;
+        const x = opcode.iq2;
+        const y = opcode.iq1;
         self.registers[x], self.registers[0xF] =
             @addWithOverflow(self.registers[x], self.registers[y]);
         if (dbg) |d|{
@@ -613,8 +480,8 @@ pub const Chip8CPU = struct {
     // The interpreter subtracts VY of VX; if VX > VY then VF is set to 1, 
     // oterwise 0.
     fn subVxVy(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const y: u4 = opcode.iq1;
+        const x = opcode.iq2;
+        const y = opcode.iq1;
         self.registers[0xF] = if (self.registers[x] > self.registers[y]) 1
             else 0;
         self.registers[x], _ = @subWithOverflow(self.registers[x], self.registers[y]);
@@ -630,8 +497,8 @@ pub const Chip8CPU = struct {
     // The interpreter performs the right shift by 1 in the register VX. VF is
     // set to the reminder of VX//2.
     fn shrVx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const y: u4 = opcode.iq1;
+        const x = opcode.iq2;
+        const y = opcode.iq1;
         self.registers[0xF] = self.registers[x] & 0x1;
         self.registers[x] >>= 1;
         if (dbg) |d|{
@@ -646,8 +513,8 @@ pub const Chip8CPU = struct {
     // The interpreter subtracts VX of VY; if VY > VX then VF is set to 1, 
     // oterwise 0.
     fn subnVxVy(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const y: u4 = opcode.iq1;
+        const x = opcode.iq2;
+        const y = opcode.iq1;
         self.registers[0xF] = if (self.registers[y] > self.registers[x]) 1
             else 0;
         self.registers[x], _ = @subWithOverflow(self.registers[y], self.registers[x]);
@@ -663,10 +530,9 @@ pub const Chip8CPU = struct {
     // The interpreter performs the left shift by 1 in the register VX. VF is
     // set to 1 if overflow occured or 0, otherwise.
     fn shlVx(self: *Self, opcode: Opcode, dbg: ?* db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const y: u4 = opcode.iq1;
-        self.registers[0xF] = (self.registers[x] >> 7) & 0x1;
-        self.registers[x], _ = @shlWithOverflow(self.registers[x], 1);
+        const x = opcode.iq2;
+        const y = opcode.iq1;
+        self.registers[x], self.registers[0xF] = @shlWithOverflow(self.registers[x], 1);
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0x8XYE[6..9]);
             utils.nibbleHex(y, d.I_0x8XYE[14..17]);
@@ -679,8 +545,8 @@ pub const Chip8CPU = struct {
     // The interpreter compares VX with VY; if they are not equal, it increments
     // the PC.
     fn sneVxVy(self: *Self, opcode: Opcode, dbg: ?* db.Debugger) void{
-        const x: u4 = opcode.iq2;
-        const y: u4 = opcode.iq1;
+        const x = opcode.iq2;
+        const y = opcode.iq1;
         if (self.registers[x] != self.registers[y]){
             self.incrementPC();
         }
@@ -703,9 +569,13 @@ pub const Chip8CPU = struct {
 
     // OPCODE: 0xBNNN
     // Jump to location NNN+V0
-    fn jpV0Addr(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
+    fn jpV0Addr(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) MemoryError!void{
         const addr: u16 = opcode.fetchAddr();
-        self.pc = self.registers[0x0] + addr;
+        const loc, const carry = @addWithOverflow(self.registers[0], addr);
+        if (loc > MEM_END or carry != 0){
+            return MemoryError.MEMORY_INDEX_OUT_OF_BOUNDS;
+        }
+        self.pc = loc;
         if (dbg) |d|{
             utils.u16Hex(addr, d.I_0xBNNN[7..]);
             d.last_instruction = &d.I_0xBNNN;
@@ -717,7 +587,7 @@ pub const Chip8CPU = struct {
     // The interpreter generates a random u8 and performs a bitwise and with
     // the byte KK. Te result is stored in VX.
     fn rndVxByte(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         const kk: u8 = opcode.fetchByte();
         self.registers[x] = std.crypto.random.int(u8) & kk;
         if (dbg) |d|{
@@ -730,18 +600,55 @@ pub const Chip8CPU = struct {
     // OPCODE: 0xDXYN
     // Display n-byte sprite starting at memory location IR at (VX,VY) and
     // set VF as collision.
-    fn drwVxVyNibble(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const ix: u4 = opcode.iq2;
-        const iy: u4 = opcode.iq1;
-        const nibble: u4 = opcode.lsq;
-        const pos_x: u8 = self.registers[ix];
-        const pos_y: u8 = self.registers[iy];
-        const v0xF: *u8 = &self.registers[0xF];
-        const sprite = self.memory.getChunk(self.pc, self.pc + nibble);
-        self.graphics.draw(pos_x, pos_y, sprite, v0xF);
+
+    // A sprite is an array of 4-bit unsigned integer, thus with maximum height
+    // of 16 pixels. The sprite is drawn from the memory starting at the address pointed
+    // by the index register and ranging indicated by the nibble. Bellow, we show an 
+    // example of an sprite starting at memory addres 0x0C32 with height 6. This sprite
+    // is a representation of the letter E.
+    //
+    //                  bit 0 1 2 3 4 5 6 7
+    //         -------+--------------------
+    //         0x0C32 |     0 1 1 1 1 1 0 0
+    //         0x0C33 |     0 1 0 0 0 0 0 0
+    //         0x0C34 |     0 1 0 0 0 0 0 0
+    //         0x0C35 |     0 1 1 1 1 1 0 0
+    //         0x0C36 |     0 1 0 0 0 0 0 0
+    //         0x0C37 |     0 1 0 0 0 0 0 0
+    //         0x0C38 |     0 1 1 1 1 1 0 0
+    //
+    // The draw function then checks the activation of each bit of each byte, when it is 
+    // active, it XORs the correspondent coordinate with the value 1 and if the result is 0,
+    // sets the register 0xF to 1.
+   fn drwVxVyNibble(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
+        const x = opcode.iq2;
+        const y = opcode.iq1;
+        const nibble = opcode.lsq;
+        const x_co = self.registers[x];
+        const y_co = self.registers[y];
+        std.debug.print("coo_x: {}\n", .{x_co});
+        std.debug.print("coo_y: {}\n", .{y_co});
+        var row: usize = 0;
+        while (row < nibble) : (row += 1){
+            const byte = self.memory[self.ir + row];
+            std.debug.print("y: {}\n", .{row});
+            std.debug.print("byte: 0x{x}\n", .{byte});
+            var col: usize = 0;
+            while (col < 8) : (col += 1){
+                const pixel_ptr = self.getPixelPtr(x_co + col, y_co + row);
+                const bit: u1 = @truncate((byte >> @truncate(7 - col)) & 0x1);
+                pixel_ptr.* ^= bit;
+                std.debug.print("x: {}\n", .{col});
+                std.debug.print("\tbit: {}\n", .{bit});
+                std.debug.print("\tpixel: {}\n", .{pixel_ptr.*});
+                if (bit == 1 and pixel_ptr.* == 0){
+                    self.registers[0xF] = 1;
+                }
+            }
+        }
         if (dbg) |d|{
-            utils.nibbleHex(ix, d.I_0xDXYN[6..9]);
-            utils.nibbleHex(iy, d.I_0xDXYN[14..17]);
+            utils.nibbleHex(x, d.I_0xDXYN[6..9]);
+            utils.nibbleHex(y, d.I_0xDXYN[14..17]);
             utils.nibbleHex(nibble, d.I_0xDXYN[20..]);
             d.last_instruction = &d.I_0xDXYN;
         }
@@ -750,7 +657,7 @@ pub const Chip8CPU = struct {
     // OPCODE: 0xEX9E
     // Skip next instruction if key VX is pressed
     fn skpVx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         const key: u8 = self.registers[x];
         if (self.keys[key] == 1){
             self.incrementPC();
@@ -764,7 +671,7 @@ pub const Chip8CPU = struct {
     // OPCODE: 0xEXA1
     // Skip next instruction if key VX is not pressed.
     fn sknpVX(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         const key: u8 = self.registers[x];
         if (self.keys[key] == 0){
             self.incrementPC();
@@ -778,7 +685,7 @@ pub const Chip8CPU = struct {
     // OPCODE: 0xFX07
     // VX := DT
     fn ldVxDt(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         self.registers[x] = self.dt;
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xFX07[5..8]);
@@ -789,7 +696,7 @@ pub const Chip8CPU = struct {
     // OPCODE: 0xFX0A
     // Wait for a key press, store the key in VX.
     fn ldVxKey(self: *Self, opcode: Opcode, dbg:?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         const key_pressed: bool = for (0.., self.keys) |i, key|{
             if (key == 1){
                 self.registers[x] = @intCast(i);
@@ -808,7 +715,7 @@ pub const Chip8CPU = struct {
     //OPCODE: 0xFX15
     // DT := VX
     fn ldDtVx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         self.dt = self.registers[x];
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xFX15[9..12]);
@@ -819,7 +726,7 @@ pub const Chip8CPU = struct {
     // OPCODE: 0xFX18
     // ST := VX
     fn ldStVx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         self.st = self.registers[x];
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xFX18[9..12]);
@@ -830,7 +737,7 @@ pub const Chip8CPU = struct {
     // OPCODE: 0xFX1E
     // I := I + VX
     fn addIVx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         self.ir, _ = @addWithOverflow(self.ir, self.registers[x]);
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xFX1E[9..12]);
@@ -841,9 +748,9 @@ pub const Chip8CPU = struct {
     // OPCODE: 0xFX29
     // I := location of the sprite for digit VX
     fn ldFVx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         const digit: u8 = self.registers[x];
-        self.ir = @intCast(Chip8Memory.FONT_MEM_START + (5*digit));
+        self.ir = @intCast(FONT_MEM_START + (5*digit));
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xFX29[8..11]);
             d.last_instruction = &d.I_0xFX29;
@@ -853,13 +760,13 @@ pub const Chip8CPU = struct {
     // OPCODE: 0xFX33
     // Store the bcd representation of VX in memory addr I, I+1 and I+2, respc.
     fn ldBVx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         var vx: u8 = self.registers[x];
-        self.memory.loadAddr(self.ir + 2, vx % 10);
+        self.memory[self.ir + 2] = vx % 10;
         vx /= 10;
-        self.memory.loadAddr(self.ir + 1, vx % 10);
+        self.memory[self.ir + 1] = vx % 10;
         vx /= 10;
-        self.memory.loadAddr(self.ir, vx % 10);
+        self.memory[self.ir] = vx % 10;
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xFX33[8..11]);
             d.last_instruction = &d.I_0xFX33;
@@ -869,9 +776,9 @@ pub const Chip8CPU = struct {
     // OPCODE: 0xFX55
     // Store regirsters V0..VX in memory, starting at I
     fn ldIV0Vx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         for (0..x) |i|{
-            self.memory.loadAddr(self.ir + i, self.registers[i]);
+            self.memory[self.ir + i] = self.registers[i];
         }
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xFX55[10..13]);
@@ -882,9 +789,9 @@ pub const Chip8CPU = struct {
     //OPCODE: 0xFX65
     // Read registers V0..VX from memory starting at I
     fn ldV0VxI(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
-        const x: u4 = opcode.iq2;
+        const x = opcode.iq2;
         for (0..x) |i|{
-            self.registers[i] = self.memory.getAdrr(self.ir + i);
+            self.registers[i] = self.memory[self.ir + i];
         }
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xFX65[5..8]);
@@ -912,9 +819,12 @@ test "emulation"{
         try testing.expectEqualStrings("CLS", dbg.last_instruction);
     }
     {
+        const opc: Opcode = @bitCast(@as(u16, 0x2FFF));
         const opcode: Opcode = @bitCast(@as(u16,0x00EE));
         var cpu: Chip8CPU = Chip8CPU.init();
         var dbg: db.Debugger = db.Debugger.init();
+        // put something on the stack before to avoid error.
+        try cpu.emulate(opc, null);
         try cpu.emulate(opcode, &dbg);
         try testing.expectEqualStrings("RET", dbg.last_instruction);
     }
@@ -1141,5 +1051,342 @@ test "emulation"{
         var dbg: db.Debugger = db.Debugger.init();
         try cpu.emulate(opcode, &dbg);
         try testing.expectEqualStrings("LD [I], V{0xC}", dbg.last_instruction);
+    }
+}
+
+test "cls"{
+    var cpu = Chip8CPU.init();
+    cpu.graphics = [_]u1{1} ** Chip8CPU.DSIZE;
+    const opcode: Opcode = @bitCast(@as(u16, 0x00E0));
+    try cpu.emulate(opcode, null);
+    for (cpu.graphics) |pix|{
+        try testing.expectEqual(pix, 0);
+    }
+}
+
+test "jmp-ret-call"{
+    // normal emulation, without errrors.
+    {
+        var cpu = Chip8CPU.init();
+        // JMP to addr 0x02FF
+        const opc1: Opcode = @bitCast(@as(u16, 0x12FF));
+        // CALL addr 0x2C34
+        const opc2: Opcode = @bitCast(@as(u16, 0x2C34));
+        // Ret
+        const opc3: Opcode = @bitCast(@as(u16, 0x00EE));
+        try cpu.emulate(opc1, null);
+        try testing.expectEqual(cpu.pc, 0x02FF);
+        try cpu.emulate(opc2, null);
+        try testing.expectEqual(cpu.pc, 0x0C34);
+        try testing.expectEqual(cpu.sp, 1);
+        try testing.expectEqual(cpu.stack[0], 0x02FF);
+        try cpu.emulate(opc3, null);
+        try testing.expectEqual(cpu.pc, 0x02FF);
+        try testing.expectEqual(cpu.sp, 0);
+    }
+
+    // testing errors
+    {
+        var cpu = Chip8CPU.init();
+        // Ret
+        const opc1: Opcode = @bitCast(@as(u16, 0x00EE));
+        // CALL addr 0x2C34
+        const opc2: Opcode = @bitCast(@as(u16, 0x2C34));
+        // trying to return from an empty stack.
+        const err1 = cpu.emulate(opc1, null);
+        try testing.expectError(StackError.EMPTY_STACK, err1);
+        cpu.sp = 16;
+        // trying to call on a full stack.
+        const err2 = cpu.emulate(opc2, null);
+        try testing.expectError(StackError.STACK_OVERFLOW, err2);
+    }
+}
+
+test "load_skip_instructions"{
+    // SE VX, Byte (equal).
+    {
+        var cpu = Chip8CPU.init();
+        const op_ld: Opcode = @bitCast(@as(u16, 0x65FC));
+        const op_se: Opcode = @bitCast(@as(u16, 0x35FC));
+        try cpu.emulate(op_ld, null);
+        try testing.expectEqual(cpu.registers[0x5], 0xFC);
+        try cpu.emulate(op_se, null);
+        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART + 2);
+    }
+    // SE VX, Byte (not equal).
+    {
+        var cpu = Chip8CPU.init();
+        const op_ld: Opcode = @bitCast(@as(u16, 0x61FC));
+        const op_se: Opcode = @bitCast(@as(u16, 0x31FA));
+        try cpu.emulate(op_ld, null);
+        try testing.expectEqual(cpu.registers[0x1], 0xFC);
+        try cpu.emulate(op_se, null);
+        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART);
+    }
+    // SNE VX, Byte (not equal).
+    {
+        var cpu = Chip8CPU.init();
+        const op_ld: Opcode = @bitCast(@as(u16, 0x6FFC));
+        const op_se: Opcode = @bitCast(@as(u16, 0x4FFA));
+        try cpu.emulate(op_ld, null);
+        try testing.expectEqual(cpu.registers[0xF], 0xFC);
+        try cpu.emulate(op_se, null);
+        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART + 2);
+    }
+    // SNE VX, Byte (equal).
+    {
+        var cpu = Chip8CPU.init();
+        const op_ld: Opcode = @bitCast(@as(u16, 0x69A4));
+        const op_se: Opcode = @bitCast(@as(u16, 0x49A4));
+        try cpu.emulate(op_ld, null);
+        try testing.expectEqual(cpu.registers[0x9], 0xA4);
+        try cpu.emulate(op_se, null);
+        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART);
+    }
+    // SE Vx, Vy (equal)
+    {
+        var cpu = Chip8CPU.init();
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x63A4));
+        const op_ld_y: Opcode = @bitCast(@as(u16, 0x67A4));
+        const op_se: Opcode = @bitCast(@as(u16, 0x5370));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld_y, null);
+        try testing.expectEqual(cpu.registers[0x3], cpu.registers[0x7]);
+        try cpu.emulate(op_se, null);
+        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART + 2);
+    }
+    // SE Vx, Vy (not equal)
+    {
+        var cpu = Chip8CPU.init();
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x69A4));
+        const op_ld_y: Opcode = @bitCast(@as(u16, 0x62C4));
+        const op_se: Opcode = @bitCast(@as(u16, 0x5920));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld_y, null);
+        try testing.expectEqual(cpu.registers[0x9], 0xA4);
+        try testing.expectEqual(cpu.registers[0x2], 0xC4);
+        try cpu.emulate(op_se, null);
+        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART);
+    }
+    // SNE Vx, Vy (equal)
+    {
+        var cpu = Chip8CPU.init();
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x63A4));
+        const op_ld_y: Opcode = @bitCast(@as(u16, 0x67A4));
+        const op_sne: Opcode = @bitCast(@as(u16, 0x9370));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld_y, null);
+        try testing.expectEqual(cpu.registers[0x3], cpu.registers[0x7]);
+        try cpu.emulate(op_sne, null);
+        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART);
+    }
+    // SNE Vx, Vy (not equal)
+    {
+        var cpu = Chip8CPU.init();
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x69A4));
+        const op_ld_y: Opcode = @bitCast(@as(u16, 0x62C4));
+        const op_sne: Opcode = @bitCast(@as(u16, 0x9290));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld_y, null);
+        try testing.expectEqual(cpu.registers[0x9], 0xA4);
+        try testing.expectEqual(cpu.registers[0x2], 0xC4);
+        try cpu.emulate(op_sne, null);
+        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART + 2);
+    }
+}
+
+test "add_byte"{
+    // adding without carry.
+    {
+        var cpu = Chip8CPU.init();
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x60F9));
+        const op_add: Opcode = @bitCast(@as(u16, 0x7001));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_add, null);
+        try testing.expectEqual(cpu.registers[0x0], 0xFA);
+        try testing.expectEqual(cpu.registers[0xF], 0x00);
+    }
+    // adding with carry.
+    {
+        var cpu = Chip8CPU.init();
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x65FF));
+        const op_add: Opcode = @bitCast(@as(u16, 0x7501));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_add, null);
+        try testing.expectEqual(cpu.registers[0x5], 0x00);
+        try testing.expectEqual(cpu.registers[0xF], 0x00);
+    }
+}
+
+test "register_arithmetics"{
+    var cpu = Chip8CPU.init();
+    // LD Vx, Vy.
+    {
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x69A4));
+        const op_ld: Opcode = @bitCast(@as(u16, 0x8920));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld, null);
+        try testing.expectEqual(cpu.registers[0x9], cpu.registers[0x2]);
+    }
+    // OR Vx, Vy.
+    {
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x6704));
+        const op_ld_y: Opcode = @bitCast(@as(u16, 0x64A4));
+        const result: u8 = 0x04 | 0xA4;
+        const op_ld: Opcode = @bitCast(@as(u16, 0x8741));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld_y, null);
+        try cpu.emulate(op_ld, null);
+        try testing.expectEqual(cpu.registers[0x7], result);
+    }
+    // AND Vx, Vy.
+    {
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x654A));
+        const op_ld_y: Opcode = @bitCast(@as(u16, 0x6134));
+        const result: u8 = 0x4A & 0x34;
+        const op_and: Opcode = @bitCast(@as(u16, 0x8512));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld_y, null);
+        try cpu.emulate(op_and, null);
+        try testing.expectEqual(cpu.registers[0x5], result);
+    }
+    // XOR Vx, Vy.
+    {
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x65FA));
+        const op_ld_y: Opcode = @bitCast(@as(u16, 0x613C));
+        const result: u8 = 0xFA ^ 0x3C;
+        const op_xor: Opcode = @bitCast(@as(u16, 0x8513));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld_y, null);
+        try cpu.emulate(op_xor, null);
+        try testing.expectEqual(cpu.registers[0x5], result);
+    }
+    // ADD Vx, Vy (no overflow).
+    {
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x654C));
+        const op_ld_y: Opcode = @bitCast(@as(u16, 0x611B));
+        const result: u8, const carry: u8 = @addWithOverflow(
+            @as(u8,0x4C), @as(u8,0x1B));
+        const op_add: Opcode = @bitCast(@as(u16, 0x8514));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld_y, null);
+        try cpu.emulate(op_add, null);
+        try testing.expectEqual(cpu.registers[0x5], result);
+        try testing.expectEqual(cpu.registers[0xF], carry);
+    }
+    // ADD Vx, Vy.
+    {
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x654C));
+        const op_ld_y: Opcode = @bitCast(@as(u16, 0x611B));
+        const result: u8, const carry: u8 = @addWithOverflow(
+            @as(u8,0x4C), @as(u8,0x1B));
+        const op_add: Opcode = @bitCast(@as(u16, 0x8514));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld_y, null);
+        try cpu.emulate(op_add, null);
+        try testing.expectEqual(cpu.registers[0x5], result);
+        try testing.expectEqual(cpu.registers[0xF], carry);
+    }
+    // ADD Vx, Vy (overflow).
+    {
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x65FF));
+        const op_ld_y: Opcode = @bitCast(@as(u16, 0x61FB));
+        const result: u8, const carry: u8 = @addWithOverflow(
+            @as(u8,0xFF), @as(u8,0xFB));
+        const op_add: Opcode = @bitCast(@as(u16, 0x8514));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld_y, null);
+        try cpu.emulate(op_add, null);
+        try testing.expectEqual(cpu.registers[0x5], result);
+        try testing.expectEqual(cpu.registers[0xF], carry);
+    }
+    // SUB Vx, Vy.
+    {
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x650F));
+        const op_ld_y: Opcode = @bitCast(@as(u16, 0x61FB));
+        const result: u8, var carry: u1 = @subWithOverflow(
+            @as(u8,0x0F), @as(u8,0xFB));
+        carry = ~carry;
+        const op_add: Opcode = @bitCast(@as(u16, 0x8515));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld_y, null);
+        try cpu.emulate(op_add, null);
+        try testing.expectEqual(cpu.registers[0x5], result);
+        try testing.expectEqual(cpu.registers[0xF], carry);
+    }
+    // SHR Vx, {Vy}.
+    {
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x650F));
+        const result = @as(u8,0x0F) >> 1;
+        const op_shr: Opcode = @bitCast(@as(u16, 0x8516));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_shr, null);
+        try testing.expectEqual(cpu.registers[0x5], result);
+    }
+    // SUBN Vx, Vy.
+    {
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x650F));
+        const op_ld_y: Opcode = @bitCast(@as(u16, 0x61FB));
+        const result: u8, var carry: u1 = @subWithOverflow(
+            @as(u8,0xFB), @as(u8,0x0F));
+        carry = ~carry;
+        const op_add: Opcode = @bitCast(@as(u16, 0x8517));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_ld_y, null);
+        try cpu.emulate(op_add, null);
+        try testing.expectEqual(cpu.registers[0x5], result);
+        try testing.expectEqual(cpu.registers[0xF], carry);
+    }
+    // SHL Vx, {Vy}.
+    {
+        const op_ld_x: Opcode = @bitCast(@as(u16, 0x65FF));
+        const result, const carry: u1 = @shlWithOverflow(@as(u8,0xFF),1);
+        const op_shr: Opcode = @bitCast(@as(u16, 0x851E));
+        try cpu.emulate(op_ld_x, null);
+        try cpu.emulate(op_shr, null);
+        try testing.expectEqual(cpu.registers[0x5], result);
+        try testing.expectEqual(cpu.registers[0xF], carry);
+    }
+    {
+    }
+    {
+    }
+    {
+    }
+    {
+    }
+    {
+    }
+}
+
+test "ld_index_register"{
+    var cpu = Chip8CPU.init();
+    const op: Opcode = @bitCast(@as(u16, 0xAF1C));
+    try cpu.emulate(op, null);
+    try testing.expectEqual(cpu.ir, 0xF1C);
+}
+
+test "Jump NNN + V0"{
+}
+
+test "drawing"{
+    // DRAWING `0` at `(0,0)`.
+    //       Addr    Hex   bit 7 6 5 4 3 2 1 0
+    //      -------+------+----------------
+    //      0x0050 | 0xF0 |    1 1 1 1 0 0 0 0
+    //      0x0051 | 0x90 |    1 0 0 1 0 0 0 0
+    //      0x0052 | 0x90 |    1 0 0 1 0 0 0 0
+    //      0x0053 | 0x90 |    1 0 0 1 0 0 0 0
+    //      0x0054 | 0xF0 |    1 1 1 1 0 0 0 0
+    {
+        var cpu = Chip8CPU.init();
+        const op_x = Opcode.init(0x6000);
+        const op_y = Opcode.init(0x6100);
+        const op_ir = Opcode.init(0xA050);
+        const op_drw = Opcode.init(0xD015);
+        try cpu.emulate(op_x, null);
+        try cpu.emulate(op_y, null);
+        try cpu.emulate(op_ir, null);
+        try cpu.emulate(op_drw, null);
     }
 }
