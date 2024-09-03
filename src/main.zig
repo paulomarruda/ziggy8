@@ -1,3 +1,8 @@
+// @file: main.zig
+// @author: Paulo Arruda
+// @license: MIT
+// @brief: Chip8's main function.
+
 const std = @import("std");
 const app = @import("emulator.zig");
 const chip8_cpu = @import("cpu.zig");
@@ -12,7 +17,7 @@ pub fn main() !void{
     var args_it = try std.process.argsWithAllocator(allocator);
     _ = args_it.skip();
     const filepath = args_it.next() orelse "";
-    var emu = try app.Emulator.init(true);
+    var emu = try app.Emulator.init(false);
     defer emu.denit();
     try emu.emulate(true, filepath);
 }

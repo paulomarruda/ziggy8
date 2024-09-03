@@ -1,10 +1,14 @@
+// @file: cpu.zig
+// @author: Paulo Arruda
+// @license: MIT
+// @brief: Implementation of Chip8's CPU
+
 const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const math = std.math;
 const utils = @import("utils.zig");
 const db = @import("debugger.zig");
-// CONSTANTS
 
 const FONT_SET = [_]u8{
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -24,8 +28,6 @@ const FONT_SET = [_]u8{
     0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
     0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 };
-
-const KEY_SIZE: usize = 16;
 
 pub const CPUError = error{
     InvalidOpcode,
@@ -87,6 +89,7 @@ pub const Chip8Instruction = union(enum){
 
 pub const Chip8CPU = struct {
     const Self = @This();
+    pub const KEY_SIZE: usize = 16;
     pub const REGISTER_SIZE = 16;
     pub const STACK_SIZE = 16;
     pub const DROWS: usize = 32;
@@ -626,21 +629,14 @@ pub const Chip8CPU = struct {
         const nibble = opcode.lsq;
         const x_co = self.registers[x];
         const y_co = self.registers[y];
-        std.debug.print("coo_x: {}\n", .{x_co});
-        std.debug.print("coo_y: {}\n", .{y_co});
         var row: usize = 0;
         while (row < nibble) : (row += 1){
             const byte = self.memory[self.ir + row];
-            std.debug.print("y: {}\n", .{row});
-            std.debug.print("byte: 0x{x}\n", .{byte});
             var col: usize = 0;
             while (col < 8) : (col += 1){
                 const pixel_ptr = self.getPixelPtr(x_co + col, y_co + row);
                 const bit: u1 = @truncate((byte >> @truncate(7 - col)) & 0x1);
                 pixel_ptr.* ^= bit;
-                std.debug.print("x: {}\n", .{col});
-                std.debug.print("\tbit: {}\n", .{bit});
-                std.debug.print("\tpixel: {}\n", .{pixel_ptr.*});
                 if (bit == 1 and pixel_ptr.* == 0){
                     self.registers[0xF] = 1;
                 }

@@ -1,3 +1,8 @@
+// @file: emulator.zig
+// @author: Paulo Arruda
+// @license: MIT
+// @brief: Implementation of Chip8's emulation routines.
+
 const std = @import("std");
 const cpu = @import("cpu.zig");
 const dbg = @import("debugger.zig");
