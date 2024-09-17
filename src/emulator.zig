@@ -1,10 +1,10 @@
 // @file: emulator.zig
 // @author: Paulo Arruda
 // @license: MIT
-// @brief: Implementation of Chip8's emulation routines.
+// @brief: Implementation of Chip8's emulation routines with SDL for graphics.
 
 const std = @import("std");
-const cpu = @import("cpu.zig");
+const core = @import("core.zig");
 const dbg = @import("debugger.zig");
 const c = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -24,7 +24,7 @@ pub const Emulator = struct {
     pub const WINDOW_NAME = "Z8: Chip8 emulator";
 
     is_open: bool,
-    cpu: cpu.Chip8CPU,
+    core: core.Chip8,
     debug: ?dbg.Debugger,
     window: ?*c.SDL_Window,
     renderer: ?*c.SDL_Renderer,
@@ -32,12 +32,11 @@ pub const Emulator = struct {
 
     pub fn init(debug: bool) EmulationError!Emulator{
         if (c.SDL_Init(c.SDL_INIT_EVERYTHING) != 0){
-            std.debug.print("peido\n", .{});
             return EmulationError.SDL_INIT_FAILED;
         }
         var self: Emulator = undefined;
         self.is_open = true;
-        self.cpu = cpu.Chip8CPU.init();
+        self.core = core.Chip8.init();
         self.debug = if (debug) dbg.Debugger.init() else null;
         self.window = c.SDL_CreateWindow(WINDOW_NAME, c.SDL_WINDOWPOS_CENTERED,
             c.SDL_WINDOWPOS_CENTERED, SCREEN_WIDTH, SCREEN_HEIGHT,
@@ -73,11 +72,27 @@ pub const Emulator = struct {
 
     pub fn emulate(self: *Emulator, german: bool, room_filepath: [:0]const u8) !void{
         const d = if (self.debug) |*db| db else null;
-        try self.cpu.loadRom(room_filepath);
+        try self.core.memory.loadRom(room_filepath);
         // MAIN EMULATION LOOP
         while (self.is_open){
             var event: c.SDL_Event = undefined;
             while (c.SDL_PollEvent(&event) != 0){
+                self.execEvent(event, german);
+            }
+            _ = c.SDL_RenderClear(self.renderer);
+            for (0..10) |_|{
+                try self.core.emulate(d);
+            }
+            self.core.tickTimers();
+            self.generateSprites();
+            var dst = c.SDL_Rect{.x = 0, .y = 0, .w = SCREEN_WIDTH, .h = SCREEN_HEIGHT};
+            _ = c.SDL_RenderCopy(self.renderer, self.texture, null, &dst);
+            _ = c.SDL_RenderPresent(self.renderer);
+            c.SDL_Delay(17);
+        }
+    }
+
+    fn execEvent(self: *Emulator, event: c.SDL_Event, german: bool) void{
                 switch (event.type) {
                     c.SDL_QUIT => {
                         self.is_open = false;
@@ -88,38 +103,26 @@ pub const Emulator = struct {
                         }
                         const key = _getKey(event.key.keysym.scancode, german);
                         if (key) |k|{
-                            self.cpu.loadKey(k, true);
+                            self.core.loadKey(k, true);
                         }
                     },
                     c.SDL_KEYUP => {
                         const key = _getKey(event.key.keysym.scancode, german);
                         if (key) |k|{
-                            self.cpu.loadKey(k, false);
+                            self.core.loadKey(k, false);
                         }
                     },
                     else => {},
                 }
-            }
-            _ = c.SDL_RenderClear(self.renderer);
-            for (0..10) |_|{
-                try self.cpu.emulateCycle(d);
-            }
-            self.cpu.tickTimers();
-            self.generateSprites();
-            var dst = c.SDL_Rect{.x = 0, .y = 0, .w = SCREEN_WIDTH, .h = SCREEN_HEIGHT};
-            _ = c.SDL_RenderCopy(self.renderer, self.texture, null, &dst);
-            _ = c.SDL_RenderPresent(self.renderer);
-            c.SDL_Delay(17);
-        }
     }
 
     fn generateSprites(self: *Emulator) void{
         var pixels: ?[*]u32 = null;
         var pitch: c_int = 0;
         _ = c.SDL_LockTexture(self.texture, null, @ptrCast(&pixels), &pitch);
-        for (0..cpu.Chip8CPU.DCOLS) |col|{
-            for (0..cpu.Chip8CPU.DROWS) |row|{
-                pixels.?[row*cpu.Chip8CPU.DCOLS + col] = if (self.cpu.isPixelActive(col, row))
+        for (0..core.Ch8Graphics.DCOLS) |col|{
+            for (0..core.Ch8Graphics.DROWS) |row|{
+                pixels.?[row*core.Ch8Graphics.DCOLS + col] = if (self.core.graphics.isPixelActive(col, row))
                     0xFFFFFFFF else 0x000000FF;
             }
         }
@@ -144,7 +147,7 @@ fn _getKey(key: c_uint, german: bool) ?u4{
         c.SDL_SCANCODE_D => 0xB,
         c.SDL_SCANCODE_F => 0xC,
 
-        c.SDL_SCANCODE_Y => 0xD,
+        c.SDL_SCANCODE_Z => 0xD,
         c.SDL_SCANCODE_X => 0x0,
         c.SDL_SCANCODE_C => 0xE,
         c.SDL_SCANCODE_V => 0xF,

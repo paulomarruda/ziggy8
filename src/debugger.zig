@@ -1,6 +1,5 @@
 const std = @import("std");
 const testing = std.testing;
-const cpu = @import("cpu.zig");
 const utils = @import("utils.zig");
 
 pub const Debugger = struct {
@@ -17,6 +16,7 @@ pub const Debugger = struct {
         // level[8:14] is the hey repr of its u16 address.
         pub const StackLevel: type = [17]u8;
         pub const StackRepr: type = [16]StackLevel;
+        pub const MEM_ISTART = 0x200;
         // Instructions string representations.
         I_0x00E0: [3]u8,
         I_0x00EE: [3]u8,
@@ -111,7 +111,7 @@ pub const Debugger = struct {
 
         pub fn init() Debugger{
             var self: Debugger = undefined;
-            utils.u16Hex(cpu.Chip8CPU.MEM_ISTART, &self.pc_repr);
+            utils.u16Hex(MEM_ISTART, &self.pc_repr);
             self.I_0x00E0= "CLS".*;
             self.I_0x00EE= "RET".*;
             self.I_0x1NNN= "JP 0x0NNN".*;

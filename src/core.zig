@@ -1,33 +1,14 @@
-// @file: cpu.zig
-// @author: Paulo Arruda
-// @license: MIT
-// @brief: Implementation of Chip8's CPU
+// @file core.zig
+// @author Paulo Arruda
+// @license MIT
+// @brief Implementation of Chip8's instructions and their executions.
 
 const std = @import("std");
 const testing = std.testing;
-const Allocator = std.mem.Allocator;
 const math = std.math;
 const utils = @import("utils.zig");
 const db = @import("debugger.zig");
 
-const FONT_SET = [_]u8{
-    0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
-    0x20, 0x60, 0x20, 0x20, 0x70, // 1
-    0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
-    0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
-    0x90, 0x90, 0xF0, 0x10, 0x10, // 4
-    0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
-    0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
-    0xF0, 0x10, 0x20, 0x40, 0x40, // 7
-    0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
-    0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
-    0xF0, 0x90, 0xF0, 0x90, 0x90, // A
-    0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
-    0xF0, 0x80, 0x80, 0x80, 0xF0, // C
-    0xE0, 0x90, 0x90, 0x90, 0xE0, // D
-    0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-    0xF0, 0x80, 0xF0, 0x80, 0x80, // F
-};
 
 pub const CPUError = error{
     InvalidOpcode,
@@ -84,23 +65,133 @@ pub const Opcode = packed struct(u16){
     }
 };
 
-pub const Chip8Instruction = union(enum){
+pub const Ch8Graphics = struct {
+    pub const DROWS: usize = 32;
+    pub const DCOLS: usize = 64;
+    pub const DSIZE: usize = 2048;
+    pub const Sprite = []const u8;
+    buffer: [DSIZE]u1,
+
+    pub fn cls(self: *Ch8Graphics) void{
+        @memset(&self.buffer, 0);
+    }
+
+    pub fn init() Ch8Graphics{
+        var self: Ch8Graphics = undefined;
+        @memset(&self.buffer, 0);
+        return self;
+    }
+
+    fn getPixelPtr(self: *Ch8Graphics, pos_x: usize, pos_y: usize) *u1{
+        const x: usize = pos_y & 31;
+        const y: usize = pos_x & 63;
+        return &self.buffer[y*DCOLS + x];
+    }
+
+    pub fn isPixelActive(self: *Ch8Graphics, pos_x: usize, pos_y: usize) bool{
+        return if (self.getPixelPtr(pos_x, pos_y).* == 1) true else false;
+    }
+
+    pub fn draw(self: *Ch8Graphics, vx: usize, vy: usize, sprite: Sprite, v0xF: *u8) void{
+        for (sprite, 0..) |byte, row|{
+            for (0..8) |col|{
+                const pos_y = vy + row;
+                const pos_x = vx + col;
+                const pixel_ptr = self.getPixelPtr(pos_x, pos_y);
+                const bit: u1 = @truncate((byte >> @truncate(7-col)) & 0x1);
+                pixel_ptr.* ^= bit;
+                if (bit == 1 and pixel_ptr.* == 0){
+                    v0xF.* = 1;
+                }
+            }
+        }
+    }
 };
 
-pub const Chip8CPU = struct {
+pub const Ch8Memory = struct {
+    pub const MEM_SIZE: usize = 4096;
+    pub const FONT_MEM_START: usize = 0x050;
+    pub const FONT_MEM_END: usize = 0x0A0;
+    pub const MEM_PROGRAM_START: usize = 0x0200;
+    pub const MEM_END: usize = 0x0FFF;
+    pub const Sprite = [] const u8;
+
+    buffer: [MEM_SIZE]u8,
+
+    pub fn init() Ch8Memory{
+        const FONT_SET = [_]u8{
+            0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+            0x20, 0x60, 0x20, 0x20, 0x70, // 1
+            0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+            0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+            0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+            0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+            0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+            0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+            0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+            0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+            0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+            0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+            0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+            0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+            0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+            0xF0, 0x80, 0xF0, 0x80, 0x80, // F
+        };
+        var self: Ch8Memory = undefined;
+        @memset(&self.buffer, 0);
+        @memcpy(self.buffer[FONT_MEM_START..FONT_MEM_END], &FONT_SET);
+        return self;
+    }
+
+    pub fn ldByte(self: *Ch8Memory, byte: u8, index: usize) MemoryError!void{
+        if (!isMemAdrrValid(index)){
+            return MemoryError.MEMORY_INDEX_OUT_OF_BOUNDS;
+        }
+        self.buffer[index] = byte;
+    }
+
+    pub fn getByte(self: Ch8Memory, index: usize) MemoryError!u8{
+        if (!isMemAdrrValid(index)){
+            return MemoryError.MEMORY_INDEX_OUT_OF_BOUNDS;
+        }
+        return self.buffer[index];
+    }
+
+    pub fn isMemAdrrValid(index: usize) bool{
+        return if (index >= MEM_PROGRAM_START and index <= MEM_END) true else false;
+    }
+
+    pub fn loadRom(self: *Ch8Memory, filepath: [:0]const u8) !void{
+        var file = std.fs.cwd().openFile(filepath, .{})
+            catch |err| return err;
+        defer file.close();
+        const size = file.getEndPos()
+            catch |err| return err;
+        var reader = file.reader();
+        for (0..size) |i|{
+            const byte = reader.readByte()
+                catch |err| return err;
+            self.buffer[MEM_PROGRAM_START + i] =  byte; 
+        }
+    }
+
+    pub fn getOpcode(self: Ch8Memory, pc: usize) Opcode{
+        var code: u16 = self.buffer[pc];
+        code <<= 8;
+        code |= @as(u16, self.buffer[pc + 1]);
+        return Opcode.init(code);
+    }
+
+    pub fn getSprite(self: Ch8Memory, ir: usize, nibble: usize) Sprite{
+        return self.buffer[ir .. ir + nibble];
+    }
+};
+
+pub const Chip8 = struct {
     const Self = @This();
     pub const KEY_SIZE: usize = 16;
     pub const REGISTER_SIZE = 16;
     pub const STACK_SIZE = 16;
-    pub const DROWS: usize = 32;
-    pub const DCOLS: usize = 64;
-    // DSIZE := DROWS * DCOLS
-    pub const DSIZE: usize = DROWS * DCOLS;
-    pub const MEM_SIZE: usize = 4096;
-    pub const FONT_MEM_START: usize = 0x050;
-    pub const FONT_MEM_END: usize = 0x0A0;
-    pub const MEM_ISTART: usize = 0x0200;
-    pub const MEM_END: usize = 0x0FFF;
     // Chip8 has 16 8-bit registers, ranging from 0x0 to 0xF. The register
     // 0xF is not for use of the programs, instead it holds information from
     // instructions performed.
@@ -118,74 +209,41 @@ pub const Chip8CPU = struct {
     stack: [STACK_SIZE]u16,
     // The Stack pointer.
     sp: u8,
-    memory: [MEM_SIZE]u8,
+    memory: Ch8Memory,
     // Chip8 has 16 keys that can either be activated (or down) or deactivated (or up).
     keys: [KEY_SIZE]u1,
     // The original Chip8 had a 32x64 black-and-white display. Here we represent it as a contiguous
     // block of memory that can be either activated (=1, representing white) or deactivated (=0, 
     // representing black). The abstract position (X,Y) correspond to the index Y*DCOLS + X in our
     // representation.
-    graphics: [DSIZE]u1,
-    allocator: Allocator,
+    graphics: Ch8Graphics,
 
     pub fn init() Self{
         var self: Self = undefined;
-        self.registers = [_]u8{0} ** REGISTER_SIZE;
-        self.pc = MEM_ISTART;
+        self.pc = Ch8Memory.MEM_PROGRAM_START;
         self.ir = 0x0000;
         self.dt = 0x00;
         self.st = 0x00;
         self.sp = 0;
-        self.memory = [_]u8{0} ** MEM_SIZE;
-        @memcpy(self.memory[FONT_MEM_START..FONT_MEM_END], &FONT_SET);
-        self.stack = [_]u16{0} ** STACK_SIZE;
-        self.keys = [_]u1{0} ** KEY_SIZE;
-        self.graphics = [_]u1{0} ** DSIZE;
+        @memset(&self.registers, 0);
+        @memset(&self.stack, 0);
+        @memset(&self.keys, 0);
+        self.memory = Ch8Memory.init();
+        self.graphics = Ch8Graphics.init();
         return self;
-    }
-
-    pub fn loadRom(self: *Self, filepath: [:0]const u8) !void{
-        var file = std.fs.cwd().openFile(filepath, .{})
-            catch |err| return err;
-        defer file.close();
-        const size = file.getEndPos()
-            catch |err| return err;
-        var reader = file.reader();
-        for (0..size) |i|{
-            const byte = reader.readByte()
-                catch |err| return err;
-            self.memory[MEM_ISTART + i] =  byte; 
-        }
     }
 
     pub fn loadKey(self: *Self, key: usize, down: bool) void{
         self.keys[key] = if (down) 1 else 0;
     }
 
-    pub fn getPixelPtr(self: *Self, x_co: usize, y_co: usize) *u1{
-        const index: usize = (y_co & 31) * DCOLS + (x_co & 63);
-        return &self.graphics[index];
-    }
-
-    pub fn isPixelActive(self: *Self, x_co: usize, y_co: usize) bool{
-        return if (self.getPixelPtr(x_co, y_co).* == 1) true else false;
-    }
-
-    pub fn getOpcode(self: Self) Opcode{
-        var code: u16 = self.memory[self.pc];
-        code <<= 8;
-        code |= @as(u16, self.memory[self.pc + 1]);
-        const opcode: Opcode = @bitCast(code);
-        return opcode;
-    }
-
     // THE EMULATION CYCLE
     // -------------------
 
-    pub fn emulateCycle(self: *Self, dbg: ?*db.Debugger) !void{
-        const opcode: Opcode = self.getOpcode();
+    pub fn emulate(self: *Self, dbg: ?*db.Debugger) !void{
+        const opcode: Opcode = self.memory.getOpcode(self.pc);
         self.incrementPC();
-        try self.emulate(opcode, dbg);
+        try self.decode(opcode, dbg);
         if (dbg) |d|{
             d.print();
         }
@@ -204,14 +262,14 @@ pub const Chip8CPU = struct {
         }
     }
 
-    pub fn emulate(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) !void{
+    pub fn decode(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) !void{
         try switch (opcode.msq) {
             0x0 => {
-                switch (opcode.lsq) {
+                try switch (opcode.lsq) {
                     0x0 => self.cls(dbg),
-                    0xE => try self.ret(dbg),
+                    0xE => self.ret(dbg),
                     else => return CPUError.InvalidOpcode,
-                }
+                };
             },
             0x1 => self.jpAddr(opcode, dbg),
             0x2 => try self.callAdrr(opcode, dbg),
@@ -247,23 +305,23 @@ pub const Chip8CPU = struct {
                 }
             },
             0xF => {
-                switch (opcode.lsq) {
+                try switch (opcode.lsq) {
                     0x7 => self.ldVxDt(opcode, dbg),
                     0xA => self.ldVxKey(opcode, dbg),
                     0x5 => {
-                        switch (opcode.iq1) {
+                        try switch (opcode.iq1) {
                             0x1 => self.ldDtVx(opcode, dbg),
                             0x5 => self.ldIV0Vx(opcode, dbg),
                             0x6 => self.ldV0VxI(opcode, dbg),
                             else => return CPUError.InvalidOpcode
-                        }
+                        };
                     },
                     0x8 => self.ldStVx(opcode, dbg),
                     0xE => self.addIVx(opcode, dbg),
                     0x9 => self.ldFVx(opcode, dbg),
                     0x3 => self.ldBVx(opcode, dbg),
                     else => return CPUError.InvalidOpcode
-                }
+                };
             },
         };
     }
@@ -278,11 +336,17 @@ pub const Chip8CPU = struct {
     // THE INSTRUCTIONS
     // ----------------
 
+    // Opcode: 0x0NNN.
+    // // Jump to machine code routine at 0x0NNN.
+    // // NOT IMPLEENTED FOR THIS EMULATOR.
+    // fn sysAdrr(self: *Self, dbg: ?*db.Debugger) void{
+    // }
+
     // OPCODE: 0x00E0
     // clear the screen.
     // The interpreter sets the graphic's representation's entries to 0.
     fn cls(self: *Self, dbg: ?*db.Debugger) void{
-        @memset(self.graphics[0..], 0);
+        self.graphics.cls();
         if (dbg) |d|{
             d.last_instruction = &d.I_0x00E0;
         }
@@ -575,7 +639,7 @@ pub const Chip8CPU = struct {
     fn jpV0Addr(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) MemoryError!void{
         const addr: u16 = opcode.fetchAddr();
         const loc, const carry = @addWithOverflow(self.registers[0], addr);
-        if (loc > MEM_END or carry != 0){
+        if (!Ch8Memory.isMemAdrrValid(loc) or carry != 0){
             return MemoryError.MEMORY_INDEX_OUT_OF_BOUNDS;
         }
         self.pc = loc;
@@ -623,25 +687,14 @@ pub const Chip8CPU = struct {
     // The draw function then checks the activation of each bit of each byte, when it is 
     // active, it XORs the correspondent coordinate with the value 1 and if the result is 0,
     // sets the register 0xF to 1.
-   fn drwVxVyNibble(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
+    fn drwVxVyNibble(self: *Chip8, opcode: Opcode, dbg: ?*db.Debugger) void{
         const x = opcode.iq2;
         const y = opcode.iq1;
+        const vx = self.registers[x];
+        const vy = self.registers[y];
         const nibble = opcode.lsq;
-        const x_co = self.registers[x];
-        const y_co = self.registers[y];
-        var row: usize = 0;
-        while (row < nibble) : (row += 1){
-            const byte = self.memory[self.ir + row];
-            var col: usize = 0;
-            while (col < 8) : (col += 1){
-                const pixel_ptr = self.getPixelPtr(x_co + col, y_co + row);
-                const bit: u1 = @truncate((byte >> @truncate(7 - col)) & 0x1);
-                pixel_ptr.* ^= bit;
-                if (bit == 1 and pixel_ptr.* == 0){
-                    self.registers[0xF] = 1;
-                }
-            }
-        }
+        const sprite = self.memory.getSprite(self.ir, nibble);
+        self.graphics.draw(vx, vy, sprite, &self.registers[0xF]);
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xDXYN[6..9]);
             utils.nibbleHex(y, d.I_0xDXYN[14..17]);
@@ -649,6 +702,33 @@ pub const Chip8CPU = struct {
             d.last_instruction = &d.I_0xDXYN;
         }
     }
+   // fn drwVxVyNibble(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
+   //      const x = opcode.iq2;
+   //      const y = opcode.iq1;
+   //      const nibble = opcode.lsq;
+   //      const x_co = self.registers[x];
+   //      const y_co = self.registers[y];
+   //      var row: usize = 0;
+   //      while (row < nibble) : (row += 1){
+   //          const byte = self.memory[self.ir + row];
+   //          var col: usize = 0;
+   //          while (col < 8) : (col += 1){
+   //              const pixel_ptr = self.getPixelPtr(x_co + col, y_co + row);
+   //              const bit: u1 = @truncate((byte >> @truncate(7 - col)) & 0x1);
+   //              pixel_ptr.* ^= bit;
+   //              if (bit == 1 and pixel_ptr.* == 0){
+   //                  self.registers[0xF] = 1;
+   //              }
+   //          }
+   //      }
+   //      if (dbg) |d|{
+   //          utils.nibbleHex(x, d.I_0xDXYN[6..9]);
+   //          utils.nibbleHex(y, d.I_0xDXYN[14..17]);
+   //          utils.nibbleHex(nibble, d.I_0xDXYN[20..]);
+   //          d.last_instruction = &d.I_0xDXYN;
+   //      }
+   //  }
+
 
     // OPCODE: 0xEX9E
     // Skip next instruction if key VX is pressed
@@ -746,7 +826,7 @@ pub const Chip8CPU = struct {
     fn ldFVx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
         const x = opcode.iq2;
         const digit: u8 = self.registers[x];
-        self.ir = @intCast(FONT_MEM_START + (5*digit));
+        self.ir = @intCast(Ch8Memory.FONT_MEM_START + (5*digit));
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xFX29[8..11]);
             d.last_instruction = &d.I_0xFX29;
@@ -755,14 +835,14 @@ pub const Chip8CPU = struct {
 
     // OPCODE: 0xFX33
     // Store the bcd representation of VX in memory addr I, I+1 and I+2, respc.
-    fn ldBVx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
+    fn ldBVx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) !void{
         const x = opcode.iq2;
         var vx: u8 = self.registers[x];
-        self.memory[self.ir + 2] = vx % 10;
+        try self.memory.ldByte(vx % 10, self.ir + 2);
         vx /= 10;
-        self.memory[self.ir + 1] = vx % 10;
+        try self.memory.ldByte(vx % 10, self.ir + 1);
         vx /= 10;
-        self.memory[self.ir] = vx % 10;
+        try self.memory.ldByte(vx % 10, self.ir);
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xFX33[8..11]);
             d.last_instruction = &d.I_0xFX33;
@@ -771,10 +851,10 @@ pub const Chip8CPU = struct {
 
     // OPCODE: 0xFX55
     // Store regirsters V0..VX in memory, starting at I
-    fn ldIV0Vx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
+    fn ldIV0Vx(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) !void{
         const x = opcode.iq2;
         for (0..x) |i|{
-            self.memory[self.ir + i] = self.registers[i];
+            try self.memory.ldByte(self.registers[i], self.ir + i);
         }
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xFX55[10..13]);
@@ -784,10 +864,11 @@ pub const Chip8CPU = struct {
 
     //OPCODE: 0xFX65
     // Read registers V0..VX from memory starting at I
-    fn ldV0VxI(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) void{
+    fn ldV0VxI(self: *Self, opcode: Opcode, dbg: ?*db.Debugger) !void{
         const x = opcode.iq2;
         for (0..x) |i|{
-            self.registers[i] = self.memory[self.ir + i];
+            const byte = try self.memory.getByte(self.ir + i);
+            self.registers[i] = byte;
         }
         if (dbg) |d|{
             utils.nibbleHex(x, d.I_0xFX65[5..8]);
@@ -797,7 +878,7 @@ pub const Chip8CPU = struct {
 };
 
 test "opcode"{
-    const opcode: Opcode = @bitCast(@as(u16, 0x1234));
+    const opcode: Opcode = Opcode.init(0x1234);
     try testing.expectEqual(opcode.lsq, 0x4);
     try testing.expectEqual(opcode.iq1, 0x3);
     try testing.expectEqual(opcode.iq2, 0x2);
@@ -807,255 +888,256 @@ test "opcode"{
 }
 
 test "emulation"{
+    // CLS.
     {
-        const opcode: Opcode = @bitCast(@as(u16,0x00E0));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        const opcode: Opcode = Opcode.init(0x00E0);
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("CLS", dbg.last_instruction);
+        for (cpu.graphics.buffer) |pixel|{
+            try testing.expectEqual(0, pixel);
+        }
     }
+    // CALL - RET.
     {
-        const opc: Opcode = @bitCast(@as(u16, 0x2FFF));
-        const opcode: Opcode = @bitCast(@as(u16,0x00EE));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        // CALL.
+        const call_opc = Opcode.init(0x2FFF);
+        // RET.
+        const ret_opc = Opcode.init(0x00EE);
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
         // put something on the stack before to avoid error.
-        try cpu.emulate(opc, null);
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(call_opc, &dbg);
+        try testing.expectEqualStrings("CALL 0x0FFF", dbg.last_instruction);
+        try cpu.decode(ret_opc, &dbg);
         try testing.expectEqualStrings("RET", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x1234));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("JP 0x0234", dbg.last_instruction);
     }
     {
-        const opcode: Opcode = @bitCast(@as(u16,0x2A1E));
-        var cpu: Chip8CPU = Chip8CPU.init();
-        var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
-        try testing.expectEqualStrings("CALL 0x0A1E", dbg.last_instruction);
-    }
-    {
         const opcode: Opcode = @bitCast(@as(u16,0x31CE));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("SE V{0x1}, 0xCE", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x4321));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("SNE V{0x3}, 0x21", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x5820));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("SE V{0x8}, V{0x2}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x63CF));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("LD V{0x3}, 0xCF", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x717B));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("ADD V{0x1}, 0x7B", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x8AB0));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("LD V{0xA}, V{0xB}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x8041));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("OR V{0x0}, V{0x4}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x8A02));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("AND V{0xA}, V{0x0}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x87B3));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("XOR V{0x7}, V{0xB}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x89C4));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("ADD V{0x9}, V{0xC}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x8335));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("SUB V{0x3}, V{0x3}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x8676));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("SHR V{0x6}, V{0x7}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x8AC7));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("SUBN V{0xA}, V{0xC}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x808E));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("SHL V{0x0}, V{0x8}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0x9EC0));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("SNE V{0xE}, V{0xC}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xAEC7));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("LD I, 0x0EC7", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xBC00));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("JP V0, 0x0C00", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xC123));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("RND V{0x1}, 0x23", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xDC03));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("DRW V{0xC}, V{0x0}, 0x3", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xE09E));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("SKP V{0x0}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xE5A1));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("SKNP V{0x5}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xF507));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("LD V{0x5}, DT", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xF60A));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("LD V{0x6}, KEY", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xF415));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("LD DT, V{0x4}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xF818));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("LD ST, V{0x8}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xF01E));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("ADD I, V{0x0}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xF329));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("LD F, V{0x3}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xF933));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("LD B, V{0x9}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xF255));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("LD [I], V{0x2}", dbg.last_instruction);
     }
     {
         const opcode: Opcode = @bitCast(@as(u16,0xFC55));
-        var cpu: Chip8CPU = Chip8CPU.init();
+        var cpu: Chip8 = Chip8.init();
         var dbg: db.Debugger = db.Debugger.init();
-        try cpu.emulate(opcode, &dbg);
+        try cpu.decode(opcode, &dbg);
         try testing.expectEqualStrings("LD [I], V{0xC}", dbg.last_instruction);
     }
 }
 
 test "cls"{
-    var cpu = Chip8CPU.init();
-    cpu.graphics = [_]u1{1} ** Chip8CPU.DSIZE;
-    const opcode: Opcode = @bitCast(@as(u16, 0x00E0));
-    try cpu.emulate(opcode, null);
-    for (cpu.graphics) |pix|{
+    var cpu = Chip8.init();
+    const opcode: Opcode = Opcode.init(0x00E0);
+    cpu.graphics.buffer = [_]u1{1} ** Ch8Graphics.DSIZE;
+    try cpu.decode(opcode, null);
+    for (cpu.graphics.buffer) |pix|{
         try testing.expectEqual(pix, 0);
     }
 }
@@ -1063,37 +1145,37 @@ test "cls"{
 test "jmp-ret-call"{
     // normal emulation, without errrors.
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         // JMP to addr 0x02FF
         const opc1: Opcode = @bitCast(@as(u16, 0x12FF));
         // CALL addr 0x2C34
         const opc2: Opcode = @bitCast(@as(u16, 0x2C34));
         // Ret
         const opc3: Opcode = @bitCast(@as(u16, 0x00EE));
-        try cpu.emulate(opc1, null);
+        try cpu.decode(opc1, null);
         try testing.expectEqual(cpu.pc, 0x02FF);
-        try cpu.emulate(opc2, null);
+        try cpu.decode(opc2, null);
         try testing.expectEqual(cpu.pc, 0x0C34);
         try testing.expectEqual(cpu.sp, 1);
         try testing.expectEqual(cpu.stack[0], 0x02FF);
-        try cpu.emulate(opc3, null);
+        try cpu.decode(opc3, null);
         try testing.expectEqual(cpu.pc, 0x02FF);
         try testing.expectEqual(cpu.sp, 0);
     }
 
     // testing errors
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         // Ret
         const opc1: Opcode = @bitCast(@as(u16, 0x00EE));
         // CALL addr 0x2C34
         const opc2: Opcode = @bitCast(@as(u16, 0x2C34));
         // trying to return from an empty stack.
-        const err1 = cpu.emulate(opc1, null);
+        const err1 = cpu.decode(opc1, null);
         try testing.expectError(StackError.EMPTY_STACK, err1);
         cpu.sp = 16;
         // trying to call on a full stack.
-        const err2 = cpu.emulate(opc2, null);
+        const err2 = cpu.decode(opc2, null);
         try testing.expectError(StackError.STACK_OVERFLOW, err2);
     }
 }
@@ -1101,127 +1183,127 @@ test "jmp-ret-call"{
 test "load_skip_instructions"{
     // SE VX, Byte (equal).
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         const op_ld: Opcode = @bitCast(@as(u16, 0x65FC));
         const op_se: Opcode = @bitCast(@as(u16, 0x35FC));
-        try cpu.emulate(op_ld, null);
+        try cpu.decode(op_ld, null);
         try testing.expectEqual(cpu.registers[0x5], 0xFC);
-        try cpu.emulate(op_se, null);
-        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART + 2);
+        try cpu.decode(op_se, null);
+        try testing.expectEqual(cpu.pc, Chip8.MEM_ISTART + 2);
     }
     // SE VX, Byte (not equal).
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         const op_ld: Opcode = @bitCast(@as(u16, 0x61FC));
         const op_se: Opcode = @bitCast(@as(u16, 0x31FA));
-        try cpu.emulate(op_ld, null);
+        try cpu.decode(op_ld, null);
         try testing.expectEqual(cpu.registers[0x1], 0xFC);
-        try cpu.emulate(op_se, null);
-        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART);
+        try cpu.decode(op_se, null);
+        try testing.expectEqual(cpu.pc, Chip8.MEM_ISTART);
     }
     // SNE VX, Byte (not equal).
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         const op_ld: Opcode = @bitCast(@as(u16, 0x6FFC));
         const op_se: Opcode = @bitCast(@as(u16, 0x4FFA));
-        try cpu.emulate(op_ld, null);
+        try cpu.decode(op_ld, null);
         try testing.expectEqual(cpu.registers[0xF], 0xFC);
-        try cpu.emulate(op_se, null);
-        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART + 2);
+        try cpu.decode(op_se, null);
+        try testing.expectEqual(cpu.pc, Chip8.MEM_ISTART + 2);
     }
     // SNE VX, Byte (equal).
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         const op_ld: Opcode = @bitCast(@as(u16, 0x69A4));
         const op_se: Opcode = @bitCast(@as(u16, 0x49A4));
-        try cpu.emulate(op_ld, null);
+        try cpu.decode(op_ld, null);
         try testing.expectEqual(cpu.registers[0x9], 0xA4);
-        try cpu.emulate(op_se, null);
-        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART);
+        try cpu.decode(op_se, null);
+        try testing.expectEqual(cpu.pc, Chip8.MEM_ISTART);
     }
     // SE Vx, Vy (equal)
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         const op_ld_x: Opcode = @bitCast(@as(u16, 0x63A4));
         const op_ld_y: Opcode = @bitCast(@as(u16, 0x67A4));
         const op_se: Opcode = @bitCast(@as(u16, 0x5370));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld_y, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld_y, null);
         try testing.expectEqual(cpu.registers[0x3], cpu.registers[0x7]);
-        try cpu.emulate(op_se, null);
-        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART + 2);
+        try cpu.decode(op_se, null);
+        try testing.expectEqual(cpu.pc, Chip8.MEM_ISTART + 2);
     }
     // SE Vx, Vy (not equal)
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         const op_ld_x: Opcode = @bitCast(@as(u16, 0x69A4));
         const op_ld_y: Opcode = @bitCast(@as(u16, 0x62C4));
         const op_se: Opcode = @bitCast(@as(u16, 0x5920));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld_y, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld_y, null);
         try testing.expectEqual(cpu.registers[0x9], 0xA4);
         try testing.expectEqual(cpu.registers[0x2], 0xC4);
-        try cpu.emulate(op_se, null);
-        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART);
+        try cpu.decode(op_se, null);
+        try testing.expectEqual(cpu.pc, Chip8.MEM_ISTART);
     }
     // SNE Vx, Vy (equal)
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         const op_ld_x: Opcode = @bitCast(@as(u16, 0x63A4));
         const op_ld_y: Opcode = @bitCast(@as(u16, 0x67A4));
         const op_sne: Opcode = @bitCast(@as(u16, 0x9370));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld_y, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld_y, null);
         try testing.expectEqual(cpu.registers[0x3], cpu.registers[0x7]);
-        try cpu.emulate(op_sne, null);
-        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART);
+        try cpu.decode(op_sne, null);
+        try testing.expectEqual(cpu.pc, Chip8.MEM_ISTART);
     }
     // SNE Vx, Vy (not equal)
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         const op_ld_x: Opcode = @bitCast(@as(u16, 0x69A4));
         const op_ld_y: Opcode = @bitCast(@as(u16, 0x62C4));
         const op_sne: Opcode = @bitCast(@as(u16, 0x9290));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld_y, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld_y, null);
         try testing.expectEqual(cpu.registers[0x9], 0xA4);
         try testing.expectEqual(cpu.registers[0x2], 0xC4);
-        try cpu.emulate(op_sne, null);
-        try testing.expectEqual(cpu.pc, Chip8CPU.MEM_ISTART + 2);
+        try cpu.decode(op_sne, null);
+        try testing.expectEqual(cpu.pc, Chip8.MEM_ISTART + 2);
     }
 }
 
 test "add_byte"{
     // adding without carry.
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         const op_ld_x: Opcode = @bitCast(@as(u16, 0x60F9));
         const op_add: Opcode = @bitCast(@as(u16, 0x7001));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_add, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_add, null);
         try testing.expectEqual(cpu.registers[0x0], 0xFA);
         try testing.expectEqual(cpu.registers[0xF], 0x00);
     }
     // adding with carry.
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         const op_ld_x: Opcode = @bitCast(@as(u16, 0x65FF));
         const op_add: Opcode = @bitCast(@as(u16, 0x7501));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_add, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_add, null);
         try testing.expectEqual(cpu.registers[0x5], 0x00);
         try testing.expectEqual(cpu.registers[0xF], 0x00);
     }
 }
 
 test "register_arithmetics"{
-    var cpu = Chip8CPU.init();
+    var cpu = Chip8.init();
     // LD Vx, Vy.
     {
         const op_ld_x: Opcode = @bitCast(@as(u16, 0x69A4));
         const op_ld: Opcode = @bitCast(@as(u16, 0x8920));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld, null);
         try testing.expectEqual(cpu.registers[0x9], cpu.registers[0x2]);
     }
     // OR Vx, Vy.
@@ -1230,9 +1312,9 @@ test "register_arithmetics"{
         const op_ld_y: Opcode = @bitCast(@as(u16, 0x64A4));
         const result: u8 = 0x04 | 0xA4;
         const op_ld: Opcode = @bitCast(@as(u16, 0x8741));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld_y, null);
-        try cpu.emulate(op_ld, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld_y, null);
+        try cpu.decode(op_ld, null);
         try testing.expectEqual(cpu.registers[0x7], result);
     }
     // AND Vx, Vy.
@@ -1241,9 +1323,9 @@ test "register_arithmetics"{
         const op_ld_y: Opcode = @bitCast(@as(u16, 0x6134));
         const result: u8 = 0x4A & 0x34;
         const op_and: Opcode = @bitCast(@as(u16, 0x8512));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld_y, null);
-        try cpu.emulate(op_and, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld_y, null);
+        try cpu.decode(op_and, null);
         try testing.expectEqual(cpu.registers[0x5], result);
     }
     // XOR Vx, Vy.
@@ -1252,9 +1334,9 @@ test "register_arithmetics"{
         const op_ld_y: Opcode = @bitCast(@as(u16, 0x613C));
         const result: u8 = 0xFA ^ 0x3C;
         const op_xor: Opcode = @bitCast(@as(u16, 0x8513));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld_y, null);
-        try cpu.emulate(op_xor, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld_y, null);
+        try cpu.decode(op_xor, null);
         try testing.expectEqual(cpu.registers[0x5], result);
     }
     // ADD Vx, Vy (no overflow).
@@ -1264,9 +1346,9 @@ test "register_arithmetics"{
         const result: u8, const carry: u8 = @addWithOverflow(
             @as(u8,0x4C), @as(u8,0x1B));
         const op_add: Opcode = @bitCast(@as(u16, 0x8514));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld_y, null);
-        try cpu.emulate(op_add, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld_y, null);
+        try cpu.decode(op_add, null);
         try testing.expectEqual(cpu.registers[0x5], result);
         try testing.expectEqual(cpu.registers[0xF], carry);
     }
@@ -1277,9 +1359,9 @@ test "register_arithmetics"{
         const result: u8, const carry: u8 = @addWithOverflow(
             @as(u8,0x4C), @as(u8,0x1B));
         const op_add: Opcode = @bitCast(@as(u16, 0x8514));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld_y, null);
-        try cpu.emulate(op_add, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld_y, null);
+        try cpu.decode(op_add, null);
         try testing.expectEqual(cpu.registers[0x5], result);
         try testing.expectEqual(cpu.registers[0xF], carry);
     }
@@ -1290,9 +1372,9 @@ test "register_arithmetics"{
         const result: u8, const carry: u8 = @addWithOverflow(
             @as(u8,0xFF), @as(u8,0xFB));
         const op_add: Opcode = @bitCast(@as(u16, 0x8514));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld_y, null);
-        try cpu.emulate(op_add, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld_y, null);
+        try cpu.decode(op_add, null);
         try testing.expectEqual(cpu.registers[0x5], result);
         try testing.expectEqual(cpu.registers[0xF], carry);
     }
@@ -1304,9 +1386,9 @@ test "register_arithmetics"{
             @as(u8,0x0F), @as(u8,0xFB));
         carry = ~carry;
         const op_add: Opcode = @bitCast(@as(u16, 0x8515));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld_y, null);
-        try cpu.emulate(op_add, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld_y, null);
+        try cpu.decode(op_add, null);
         try testing.expectEqual(cpu.registers[0x5], result);
         try testing.expectEqual(cpu.registers[0xF], carry);
     }
@@ -1315,8 +1397,8 @@ test "register_arithmetics"{
         const op_ld_x: Opcode = @bitCast(@as(u16, 0x650F));
         const result = @as(u8,0x0F) >> 1;
         const op_shr: Opcode = @bitCast(@as(u16, 0x8516));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_shr, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_shr, null);
         try testing.expectEqual(cpu.registers[0x5], result);
     }
     // SUBN Vx, Vy.
@@ -1327,9 +1409,9 @@ test "register_arithmetics"{
             @as(u8,0xFB), @as(u8,0x0F));
         carry = ~carry;
         const op_add: Opcode = @bitCast(@as(u16, 0x8517));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_ld_y, null);
-        try cpu.emulate(op_add, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_ld_y, null);
+        try cpu.decode(op_add, null);
         try testing.expectEqual(cpu.registers[0x5], result);
         try testing.expectEqual(cpu.registers[0xF], carry);
     }
@@ -1338,8 +1420,8 @@ test "register_arithmetics"{
         const op_ld_x: Opcode = @bitCast(@as(u16, 0x65FF));
         const result, const carry: u1 = @shlWithOverflow(@as(u8,0xFF),1);
         const op_shr: Opcode = @bitCast(@as(u16, 0x851E));
-        try cpu.emulate(op_ld_x, null);
-        try cpu.emulate(op_shr, null);
+        try cpu.decode(op_ld_x, null);
+        try cpu.decode(op_shr, null);
         try testing.expectEqual(cpu.registers[0x5], result);
         try testing.expectEqual(cpu.registers[0xF], carry);
     }
@@ -1356,9 +1438,9 @@ test "register_arithmetics"{
 }
 
 test "ld_index_register"{
-    var cpu = Chip8CPU.init();
+    var cpu = Chip8.init();
     const op: Opcode = @bitCast(@as(u16, 0xAF1C));
-    try cpu.emulate(op, null);
+    try cpu.decode(op, null);
     try testing.expectEqual(cpu.ir, 0xF1C);
 }
 
@@ -1375,14 +1457,14 @@ test "drawing"{
     //      0x0053 | 0x90 |    1 0 0 1 0 0 0 0
     //      0x0054 | 0xF0 |    1 1 1 1 0 0 0 0
     {
-        var cpu = Chip8CPU.init();
+        var cpu = Chip8.init();
         const op_x = Opcode.init(0x6000);
         const op_y = Opcode.init(0x6100);
         const op_ir = Opcode.init(0xA050);
         const op_drw = Opcode.init(0xD015);
-        try cpu.emulate(op_x, null);
-        try cpu.emulate(op_y, null);
-        try cpu.emulate(op_ir, null);
-        try cpu.emulate(op_drw, null);
+        try cpu.decode(op_x, null);
+        try cpu.decode(op_y, null);
+        try cpu.decode(op_ir, null);
+        try cpu.decode(op_drw, null);
     }
 }
