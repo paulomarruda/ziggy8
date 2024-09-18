@@ -68,7 +68,7 @@ pub const Opcode = packed struct(u16){
 pub const Ch8Graphics = struct {
     pub const DROWS: usize = 32;
     pub const DCOLS: usize = 64;
-    pub const DSIZE: usize = 2048;
+    pub const DSIZE: usize = DROWS * DCOLS;
     pub const Sprite = []const u8;
     buffer: [DSIZE]u1,
 
@@ -82,9 +82,9 @@ pub const Ch8Graphics = struct {
         return self;
     }
 
-    fn getPixelPtr(self: *Ch8Graphics, pos_x: usize, pos_y: usize) *u1{
-        const x: usize = pos_y & 31;
-        const y: usize = pos_x & 63;
+    pub fn getPixelPtr(self: *Ch8Graphics, pos_x: usize, pos_y: usize) *u1{
+        const x: usize = pos_x & 63;
+        const y: usize = pos_y & 31;
         return &self.buffer[y*DCOLS + x];
     }
 

@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const app = @import("emulator.zig");
+const core = @import("core.zig");
 
 pub fn main() !void{
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);

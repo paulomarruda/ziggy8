@@ -21,7 +21,7 @@ pub const Emulator = struct {
     pub const SCREEN_WIDTH: usize = 640;
     pub const SCREEN_HEIGHT: usize = 320;
     pub const SCALE_FACTOR = 10;
-    pub const WINDOW_NAME = "Z8: Chip8 emulator";
+    pub const WINDOW_NAME = "Ziggy8: Chip8 emulator";
 
     is_open: bool,
     core: core.Chip8,
@@ -88,32 +88,33 @@ pub const Emulator = struct {
             var dst = c.SDL_Rect{.x = 0, .y = 0, .w = SCREEN_WIDTH, .h = SCREEN_HEIGHT};
             _ = c.SDL_RenderCopy(self.renderer, self.texture, null, &dst);
             _ = c.SDL_RenderPresent(self.renderer);
+            // 17 miliseconds.
             c.SDL_Delay(17);
         }
     }
 
     fn execEvent(self: *Emulator, event: c.SDL_Event, german: bool) void{
-                switch (event.type) {
-                    c.SDL_QUIT => {
-                        self.is_open = false;
-                    },
-                    c.SDL_KEYDOWN => {
-                        if (event.key.keysym.scancode == c.SDL_SCANCODE_ESCAPE){
-                            self.is_open = false;
-                        }
-                        const key = _getKey(event.key.keysym.scancode, german);
-                        if (key) |k|{
-                            self.core.loadKey(k, true);
-                        }
-                    },
-                    c.SDL_KEYUP => {
-                        const key = _getKey(event.key.keysym.scancode, german);
-                        if (key) |k|{
-                            self.core.loadKey(k, false);
-                        }
-                    },
-                    else => {},
+        switch (event.type) {
+            c.SDL_QUIT => {
+                self.is_open = false;
+            },
+            c.SDL_KEYDOWN => {
+                if (event.key.keysym.scancode == c.SDL_SCANCODE_ESCAPE){
+                    self.is_open = false;
                 }
+                const key = _getKey(event.key.keysym.scancode, german);
+                if (key) |k|{
+                    self.core.loadKey(k, true);
+                }
+            },
+            c.SDL_KEYUP => {
+                const key = _getKey(event.key.keysym.scancode, german);
+                if (key) |k|{
+                    self.core.loadKey(k, false);
+                }
+            },
+            else => {},
+        }
     }
 
     fn generateSprites(self: *Emulator) void{
